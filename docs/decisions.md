@@ -184,7 +184,8 @@ replaceable by a database behind the same repository interface.
 
 Cost: no admin UI for non-technical users until it is built.
 
-**Status:** Accepted
+**Status:** Accepted — storage clause superseded by ADR-016 (the rest stands:
+no voice framework, the dependency set, CLI before UI)
 
 ---
 
@@ -453,5 +454,56 @@ they are easy to forget: the **VPS region is inside the latency budget** (audio
 traverses carrier → VPS → model), and the VPS is **shared with unrelated
 projects**, whose CPU or I/O spikes surface as audible hesitation in the agent —
 the bridge is latency-sensitive, not bandwidth-hungry.
+
+**Status:** Accepted
+
+---
+
+## ADR-016 — Configuration in YAML, operational data in Postgres
+
+**Context.** Supersedes the storage clause of ADR-006, which put everything in
+files (YAML in, JSONL out). That choice assumed a database was an added
+dependency worth avoiding at prototype scale. It is not: Postgres already runs
+both locally and on the VPS, so the real cost is a connection string. The
+weakness of "files now, a database later" is that later rarely arrives.
+
+Files are not uniformly wrong, though. The system holds two kinds of data with
+opposite requirements, and ADR-006's mistake was treating them alike.
+
+**Decision.** Split by kind:
+
+- **Configuration — questions, questionnaires, policy — stays in YAML**, in git.
+- **Operational data — people, assignments, calls, answers — lives in Postgres**,
+  accessed through SQLAlchemy Core or psycopg with explicit queries. No heavyweight
+  ORM mapping layer; at this size it earns nothing.
+
+Schema changes are managed with Alembic and applied by the deploy (ADR-015).
+
+**Consequences.** Configuration keeps the property ADR-007 exists to protect:
+changing a question is a diff, reviewable and revertible, visible in the
+project's history. Moving it into a database would make that edit require SQL or
+a UI and leave no trace — strictly worse for the one thing that changes most.
+
+Operational data gains what files cannot give: queries. "Who has not been reached
+yet", "which question do people drop out on", "which assignments are `partial`"
+are the core loop of the runner, and on files each is a full read-and-rewrite.
+
+The split also resolves a contradiction the file-based design had left open.
+Respondent phone numbers are personal data and are excluded from git — under a
+public repository, emphatically so — which left people with nowhere to live but
+an ignored file sitting beside the tracked ones. The boundary between
+configuration and operational data now coincides with the boundary already drawn
+in `.gitignore`: what is in git is safe to publish, what is personal is in the
+database.
+
+Costs, accepted:
+
+- Migrations enter the deploy path, so a schema change can now break a
+  deployment in a way a file format could not.
+- **Tests require a running Postgres.** `AGENTS.md` demands a fast suite that
+  never touches the network; a local database satisfies that literally but adds a
+  precondition to running the tests. Tests run against real Postgres, not SQLite
+  — a substitute engine would diverge from production exactly where storage bugs
+  live, and testing against something we do not ship is a false guarantee.
 
 **Status:** Accepted

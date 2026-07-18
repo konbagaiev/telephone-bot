@@ -33,12 +33,14 @@ does not exist yet.
 > Not decisions — the agreed order of work. Each step ends in something that
 > runs. Steps become specs in `specs/active/`.
 
-1. **Data model.** Question, Questionnaire, Person, Assignment, Call, Answer,
-   Policy as Pydantic models; YAML loading; JSONL result writing. No network.
+1. **Data model.** Questions, questionnaires and policy loaded from YAML;
+   people, assignments, calls and answers in Postgres with Alembic migrations
+   (ADR-016). No network.
 2. **Accounts and environment.** Twilio and OpenAI credentials, a Spanish number
    (regulatory bundle — has lead time, start early), a verified test destination.
    On the VPS (ADR-015): a subdomain with DNS and TLS, the reverse proxy passing
-   WebSocket upgrades through, secrets in place, and a GitHub Actions deploy.
+   WebSocket upgrades through, secrets in place, a database and its credentials,
+   and a GitHub Actions deploy that runs migrations (ADR-016).
    The public base URL must then be set in **both** the app config and the Twilio
    number's webhook/stream URLs. Runs in parallel with step 1.
 
