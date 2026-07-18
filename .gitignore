@@ -1,0 +1,30 @@
+# Secrets — credentials live in GitHub Actions secrets and on the VPS (ADR-015)
+.env
+.env.*
+*.pem
+*.key
+
+# Real respondent data is personal data and must never enter git history.
+# Only fictional examples under data/example/ are committed (see AGENTS.md).
+data/*
+!data/example/
+!data/example/**
+
+# Call results are append-only local output (ADR-006)
+results/
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
