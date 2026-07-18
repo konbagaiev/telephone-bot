@@ -1,0 +1,23 @@
+# Edge-case behaviour as parameters (ADR-007). Every value here corresponds to
+# an existing branch in code — if a value ever needs a condition or a formula, it
+# should have been code instead.
+#
+# Enforcement of these values arrives with roadmap step 5; step 1 only represents
+# them.
+
+max_attempts: 3
+retry_after_minutes: 120
+
+call_window:
+  start: "10:00"
+  end: "20:00"
+
+max_call_seconds: 300
+silence_timeout_seconds: 15
+
+on_voicemail: hang_up
+on_opt_out: mark_and_stop
+
+# Region assumed when a phone number is written in national form. Numbers are
+# stored in E.164 regardless.
+default_region: ES

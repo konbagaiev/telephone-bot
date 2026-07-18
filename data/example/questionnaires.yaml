@@ -1,0 +1,18 @@
+# Example questionnaires. Fictional — real respondent data never enters git.
+#
+# A question is an intent, not a script: the model does the phrasing (ADR-007).
+# Use `phrasing` only where the exact wording matters.
+
+- id: delivery_feedback
+  questions:
+    - id: was_on_time
+      intent: whether the delivery arrived within the promised time window
+      answer_type: boolean
+      required: true
+
+    - id: improvement
+      intent: what one thing would have made the delivery better
+      answer_type: text
+      required: false
+      phrasing:
+        en: If there were one thing we could have done better, what would it be?
