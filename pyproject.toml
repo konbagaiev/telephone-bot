@@ -31,6 +31,9 @@ packages = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put the project root on sys.path so `from tests.conftest import ...` resolves
+# under a bare `pytest` (CI), not only under `python -m pytest` (which adds cwd).
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
