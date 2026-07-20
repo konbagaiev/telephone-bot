@@ -309,7 +309,8 @@ this architecture.
 
 Germany's recording law is the binding constraint on ADR-009.
 
-**Status:** Accepted
+**Status:** Accepted — Spanish-number clause superseded by ADR-018 (the target
+destinations, Germany and Cyprus, still stand)
 
 ---
 
@@ -545,5 +546,33 @@ whether a call is in flight — logic that arrives with the service itself. Unti
 then, ADR-013 (at most one call) makes a plain restart between calls acceptable;
 recreating the container mid-call would drop it, so deploys are timed, not
 drained. The shared-VPS latency caveat from ADR-015 is unchanged.
+
+**Status:** Accepted
+
+---
+
+## ADR-018 — No Spanish regulatory bundle; the demo calls from the existing Twilio number
+
+**Context.** Supersedes the Spanish-number clause of ADR-010. ADR-010 called for
+buying a Spanish number on Twilio, which requires a regulatory bundle with address
+documentation and carries weeks of lead time — accepted then on the assumption of
+a real deployment. This system is a job-interview deliverable: demoed live to a
+small, known audience and never taken to production. A Spanish caller ID buys the
+demo nothing, and its bundle is the only long-lead item on the accounts step.
+
+**Decision.** Do not provision a Spanish number and do not start its regulatory
+bundle. The demo places calls from the existing Twilio dev number, using the
+geographic-permission grants already enabled on the account for the target
+destinations.
+
+**Consequences.** The accounts step (roadmap step 2) loses its only external
+paperwork dependency, so nothing blocks the vertical slice on lead time. ADR-010's
+answer-rate concern — a foreign caller ID depressing pickup — is moot when every
+callee is a colleague expecting the call. ADR-010's target destinations (Germany,
+Cyprus) are unaffected; only the origin number changes.
+
+This decision rests entirely on the demo-only scope and does not survive it: were
+the system ever to go real, the Spanish number and its bundle return as a
+precondition, along with ADR-010's caller-ID reasoning.
 
 **Status:** Accepted

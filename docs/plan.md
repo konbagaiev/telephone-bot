@@ -36,11 +36,11 @@ does not exist yet.
 1. **Data model.** _(done)_ Questions, questionnaires and policy loaded from
    YAML; people, assignments, calls and answers in Postgres with Alembic
    migrations (ADR-016). No network.
-2. **Accounts and environment.** _(in progress)_ Twilio and OpenAI credentials, a
-   Spanish number (regulatory bundle — has lead time, start early), a verified
-   test destination. The VPS already exists (Hetzner, Germany — well placed for
-   both the German and Cypriot destinations, ADR-010). Runs in parallel with
-   step 1.
+2. **Accounts and environment.** _(in progress)_ Twilio and OpenAI credentials,
+   the existing Twilio dev number (no Spanish number and no regulatory bundle —
+   demo-only scope, ADR-018), a verified test destination. The VPS already exists
+   (Hetzner, Germany — well placed for both the German and Cypriot destinations,
+   ADR-010). Runs in parallel with step 1.
 
    While configuring the number, check that Twilio uses a European region/edge:
    on the default, media may route via the US and cross the Atlantic twice before
