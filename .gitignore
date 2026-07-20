@@ -1,6 +1,8 @@
 # Secrets — credentials live in GitHub Actions secrets and on the VPS (ADR-015)
 .env
 .env.*
+# ...but the tracked template carries no secrets and must be committed.
+!.env.example
 *.pem
 *.key
 
