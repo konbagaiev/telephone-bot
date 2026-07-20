@@ -1,0 +1,31 @@
+# App fronted by the existing Traefik, using the server's shared Postgres (ADR-017).
+#
+# Matches this server's convention: apps join `proxy` (Traefik) and `backend`
+# (reach `shared_postgres:5432`); TLS via the `letsencrypt` resolver on the
+# `websecure` entrypoint. Both networks are external (created outside compose).
+#
+# The server-side .env (git-ignored, ADR-015) provides:
+#   DATABASE_URL=postgresql+psycopg://vividi:<pw>@shared_postgres:5432/vividi
+#   (Twilio / OpenAI secrets join it in step 4)
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - proxy
+      - backend
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - "traefik.http.routers.phonebot.rule=Host(`phone-bot.bagaiev.com`)"
+      - traefik.http.routers.phonebot.entrypoints=websecure
+      - traefik.http.routers.phonebot.tls.certresolver=letsencrypt
+      - traefik.http.services.phonebot.loadbalancer.server.port=8000
+
+networks:
+  proxy:
+    external: true
+  backend:
+    external: true

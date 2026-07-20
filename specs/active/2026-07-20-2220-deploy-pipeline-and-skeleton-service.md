@@ -25,10 +25,12 @@ end.
 - **Web framework: FastAPI + uvicorn.** ASGI with native WebSocket (needed for
   the media bridge, ADR-003); Pydantic is already a dependency. Overkill for a
   health endpoint, chosen now so step 4 does not swap frameworks.
-- **Own Postgres as a compose `db` service.** The app reaches `db` over the
-  compose network with the `vividi` credentials; keeps the project self-contained
-  rather than coupling to how the VPS's other Postgres is wired. ADR-016 asks only
-  that Postgres run on the VPS, which a compose service satisfies.
+- **Use the server's shared Postgres (`shared_postgres`).** The VPS already runs
+  one Postgres container that its other projects share, each with its own
+  database and role; this project follows that convention with a dedicated
+  `vividi` role and `vividi` database (the same names as local dev). The app
+  reaches it over the `backend` network at `shared_postgres:5432`. Satisfies
+  ADR-016 ("Postgres runs on the VPS") without a redundant instance.
 - **Migrations run inside the image** (`docker compose run --rm app alembic
   upgrade head`), so the host needs only Docker + git — no venv, no host Python.
 
@@ -36,20 +38,20 @@ end.
 - `src/app.py` — FastAPI `app`, `GET /health` → `{"status": "ok"}` (200).
 - `Dockerfile` — install the package, run
   `uvicorn src.app:app --host 0.0.0.0 --port 8000`.
-- `docker-compose.yml` — `app` (Traefik labels: router on host
-  `phone-bot.bagaiev.com`, TLS via the existing resolver, service port 8000,
-  joined to the Traefik network) + `db` (Postgres, named volume, `vividi` creds
-  from `.env`).
+- `docker-compose.yml` — one `app` service: Traefik labels (router on host
+  `phone-bot.bagaiev.com`, `websecure` entrypoint, `letsencrypt` resolver, port
+  8000), joined to the external `proxy` (Traefik) and `backend` (shared Postgres)
+  networks.
 - `.github/workflows/deploy.yml` — job **test** (Postgres service + `pytest`)
   gating job **deploy** (raw `ssh` → pull → build → migrate → `up -d` → health).
 - `pyproject.toml` — add `fastapi`, `uvicorn[standard]`.
 - **GitHub repo secrets:** `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_PATH`,
   `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`.
-- **Server one-time bootstrap** (manual, documented here): `git clone` into a
-  folder beside the other projects; Docker present; a git-ignored `.env` with
-  `DATABASE_URL` (→ the `db` service) and the Twilio/OpenAI secrets (ADR-015); a
-  dedicated CI deploy key in `authorized_keys`; confirm the Traefik docker
-  network name.
+- **Server one-time bootstrap:** clone into `/opt/projects/phone-bot` (the
+  server's `/opt/projects/<name>` convention); create the `vividi` role and
+  database in `shared_postgres`; a git-ignored `.env` with `DATABASE_URL`
+  (→ `shared_postgres:5432`); a dedicated CI deploy key in `authorized_keys`.
+  (Twilio/OpenAI secrets join `.env` in step 4.)
 
 ## Deploy mechanism
 Two jobs. `test` runs the suite against a throwaway Postgres service; `deploy`
