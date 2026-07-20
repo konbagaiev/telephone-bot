@@ -33,34 +33,46 @@ does not exist yet.
 > Not decisions — the agreed order of work. Each step ends in something that
 > runs. Steps become specs in `specs/active/`.
 
-1. **Data model.** Questions, questionnaires and policy loaded from YAML;
-   people, assignments, calls and answers in Postgres with Alembic migrations
-   (ADR-016). No network.
-2. **Accounts and environment.** Twilio and OpenAI credentials, a Spanish number
-   (regulatory bundle — has lead time, start early), a verified test destination.
-   On the VPS (ADR-015): a subdomain with DNS and TLS, the reverse proxy passing
-   WebSocket upgrades through, secrets in place, a database and its credentials,
-   and a GitHub Actions deploy that runs migrations (ADR-016).
-   The public base URL must then be set in **both** the app config and the Twilio
-   number's webhook/stream URLs. Runs in parallel with step 1.
+1. **Data model.** _(done)_ Questions, questionnaires and policy loaded from
+   YAML; people, assignments, calls and answers in Postgres with Alembic
+   migrations (ADR-016). No network.
+2. **Accounts and environment.** _(in progress)_ Twilio and OpenAI credentials, a
+   Spanish number (regulatory bundle — has lead time, start early), a verified
+   test destination. The VPS already exists (Hetzner, Germany — well placed for
+   both the German and Cypriot destinations, ADR-010). Runs in parallel with
+   step 1.
 
-   The VPS is Hetzner, Germany — well placed for both the German and Cypriot
-   destinations (ADR-010). While configuring the number, check that Twilio uses a
-   European region/edge: on the default, media may route via the US and cross the
-   Atlantic twice before reaching a server that sits in Frankfurt. Unverified —
-   confirm at setup time. The round trip to the Realtime model itself is likely
-   transatlantic regardless and is not ours to optimise.
-3. **Vertical slice — one live call, one question.** The whole path end to end:
-   place a call, validate the Twilio signature, bridge the audio, the agent asks
-   one question, `record_answer` is handled, the result is written. Deliberately
-   narrow: Realtime behaves
-   differently on a real phone line than in any offline harness, and we want to
-   find that out first.
-4. **Full questionnaire.** Multiple questions, required-answer completion logic,
+   While configuring the number, check that Twilio uses a European region/edge:
+   on the default, media may route via the US and cross the Atlantic twice before
+   reaching a server that sits in Frankfurt. Unverified — confirm at setup time.
+   The round trip to the Realtime model itself is likely transatlantic regardless
+   and is not ours to optimise.
+3. **Deploy pipeline and skeleton service.** The whole path from `git push` to a
+   live public endpoint, stood up before the app that fills it, so the deployment
+   risk is separated from the latency-sensitive audio risk and each is verified on
+   its own (ADR-017). A minimal health-check service, packaged as a Docker image
+   and routed by the existing Traefik on `phone-bot.bagaiev.com` (Traefik
+   terminates TLS and passes the WebSocket upgrade through); a GitHub Actions
+   pipeline that gates on the test suite, then pulls, runs migrations (ADR-016),
+   recreates the container, and checks health. The server bootstrap lands here:
+   the checkout, Docker, a `vividi` database and its credentials, secrets in a
+   VPS-local `.env` (ADR-015), and a dedicated CI deploy key. Ends in: a push to
+   `main` updates a live HTTPS endpoint.
+4. **Vertical slice — one live call, one question.** The whole call path end to
+   end, filling the skeleton service: place a call, validate the Twilio
+   signature, bridge the audio, the agent asks one question, `record_answer` is
+   handled, the result is written. The public base URL is set in **both** the app
+   config and the Twilio number's webhook/stream URLs — one setting recorded in
+   two systems, a silent failure if they disagree (ADR-015). Configuration is read
+   per call, so editing a question takes effect on the next call without a restart
+   — the property the whole repo exists to make fast and safe (AGENTS.md).
+   Deliberately narrow: Realtime behaves differently on a real phone line than in
+   any offline harness, and we want to find that out first.
+5. **Full questionnaire.** Multiple questions, required-answer completion logic,
    `Assignment.status` transitions.
-5. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
-6. **Multilingual.** English and Russian per `Person.language`.
-7. **UI.** Only once the above works.
+6. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
+7. **Multilingual.** English and Russian per `Person.language`.
+8. **UI.** Only once the above works.
 
 ## Resolved
 

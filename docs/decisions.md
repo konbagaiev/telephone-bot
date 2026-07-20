@@ -507,3 +507,43 @@ Costs, accepted:
   live, and testing against something we do not ship is a false guarantee.
 
 **Status:** Accepted
+
+---
+
+## ADR-017 — The service runs as a Docker container behind the existing Traefik
+
+**Context.** ADR-015 put the app on the VPS behind a subdomain, deployed from
+GitHub Actions, but left *how the process runs* unspecified. A deploy that
+restarts the app — needed for any code change to take effect, since a running
+process holds the old code in memory until it is replaced — has to name a
+concrete, restartable service; the restart mechanism cannot be designed in the
+abstract. The VPS already fronts its other projects with Traefik, which routes to
+Docker containers by label, and the media path (ADR-003) is a WebSocket whose
+upgrade Traefik terminates and forwards transparently.
+
+Standing the deployment path up against the real routing and restart *before* the
+latency-sensitive Realtime bridge (ADR-002) keeps the risky infrastructure out of
+the same change as the risky audio work, so each can be verified on its own.
+
+**Decision.** Package the app as a Docker image, run it with `docker compose` on
+the VPS, and route it with Traefik labels on `phone-bot.bagaiev.com` — Traefik
+provides TLS and the WebSocket-upgrade passthrough. A deploy restarts the service
+by rebuilding and recreating the container. The full deploy pipeline — CI test
+gate, `git pull`, `alembic upgrade head`, container recreate, health check — is
+stood up first against a minimal health-check service; the vertical slice
+(roadmap step 4) fills that service with the Twilio webhook and the Realtime
+bridge.
+
+**Consequences.** Restart is deterministic and dependency-isolated; TLS and the
+WebSocket path are handled by the existing Traefik rather than reimplemented; the
+whole public path (DNS → Traefik → container) is proven before the audio work
+lands.
+
+Deferred, and named so it is not forgotten: **drain-aware restart.** ADR-015
+requires that a deploy not cut a live call, but draining needs the app to report
+whether a call is in flight — logic that arrives with the service itself. Until
+then, ADR-013 (at most one call) makes a plain restart between calls acceptable;
+recreating the container mid-call would drop it, so deploys are timed, not
+drained. The shared-VPS latency caveat from ADR-015 is unchanged.
+
+**Status:** Accepted
