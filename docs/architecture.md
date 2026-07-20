@@ -4,9 +4,10 @@
 > change that alters the architecture. Describe shape (modules, flow), not
 > line-level detail — the code is the source of truth for details.
 
-**Status: data layer only.** The questionnaire, the people, and the results
-exist. Nothing places a call yet — telephony and the Realtime session are
-roadmap steps 3 and beyond (`docs/plan.md`).
+**Status: data layer + deploy skeleton.** The questionnaire, the people, and the
+results exist, and a minimal FastAPI service (only `/health`) is deployed to the
+VPS behind Traefik by a GitHub Actions pipeline. Nothing places a call yet —
+telephony and the Realtime session are roadmap step 4 and beyond (`docs/plan.md`).
 
 ## Shape
 
@@ -29,7 +30,10 @@ publish.
 | `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`; the status enums; phone normalisation; `completion_status()` |
 | `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries |
 | `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
+| `src/app.py` | FastAPI ASGI app; `GET /health`. The Twilio webhook and Realtime WebSocket bridge join here in step 4 |
 | `migrations/` | Alembic; `0001_initial` creates the four tables |
+| `Dockerfile`, `docker-compose.yml` | The app image and its service, behind Traefik on `phone-bot.bagaiev.com`, using the shared Postgres (ADR-017) |
+| `.github/workflows/deploy.yml` | On push to `main`: test → pull → migrate → recreate container → health check |
 | `data/example/` | A fictional questionnaire and policy |
 | `tests/` | Unit tests; `conftest.py` builds the test schema by running migrations |
 
@@ -60,6 +64,17 @@ the real environment is the source (ADR-015). Credentials never live in the code
 default (`DEFAULT_DATABASE_URL` is passwordless) nor in git. Copy `.env.example`
 to `.env` to start.
 
+## Deployment
+
+On every push to `main`, GitHub Actions runs the suite and, on green, SSHes to
+the VPS to pull, run migrations, and recreate the container (ADR-017). The app
+runs as a Docker container fronted by the existing Traefik at
+`https://phone-bot.bagaiev.com` (TLS via `letsencrypt`), and reaches the server's
+shared Postgres — a dedicated `vividi` database — over the `backend` network. The
+deploy ends by health-checking the public URL. Secrets live on the VPS and in
+GitHub Actions, never in git (ADR-015). A restart recreates the container, so
+drain-aware restart is still owed once a live call has state to drain (ADR-017).
+
 ## Testing
 
 Tests run against a real Postgres, not SQLite (ADR-016). The test schema is built
@@ -86,5 +101,5 @@ back, so tests cannot see each other.
 | What "finished" means | `completion_status()` in `src/models.py` |
 | The stored shape of anything | `src/db.py` **and** a new migration — the two must move together |
 
-**Last verified against commit:** the commit that added this section (roadmap
-step 1).
+**Last verified against commit:** the commit that added the deploy pipeline and
+skeleton service (roadmap step 3).
