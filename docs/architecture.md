@@ -28,6 +28,7 @@ publish.
 | `src/config.py` | `Question`, `Questionnaire`, `Policy`; YAML loading; `ConfigError` naming file and field |
 | `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`; the status enums; phone normalisation; `completion_status()` |
 | `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries |
+| `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
 | `migrations/` | Alembic; `0001_initial` creates the four tables |
 | `data/example/` | A fictional questionnaire and policy |
 | `tests/` | Unit tests; `conftest.py` builds the test schema by running migrations |
@@ -51,6 +52,13 @@ unique constraint behind it.
 catches an assignment pointing at a questionnaire id that no longer exists in
 YAML — no foreign key can span the two engines, so this must be called before
 calls are placed.
+
+**Configuration reaches the process through the environment.** `DATABASE_URL`
+(and `TEST_DATABASE_URL`) are read from the environment. Locally, `load_local_env()`
+loads a git-ignored `.env` without overriding anything already set; in production
+the real environment is the source (ADR-015). Credentials never live in the code
+default (`DEFAULT_DATABASE_URL` is passwordless) nor in git. Copy `.env.example`
+to `.env` to start.
 
 ## Testing
 
