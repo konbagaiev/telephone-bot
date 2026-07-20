@@ -39,7 +39,7 @@ from src.models import (
     normalise_phone,
 )
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg://localhost/telbot"
+DEFAULT_DATABASE_URL = "postgresql+psycopg://localhost/vividi"
 
 metadata = MetaData()
 

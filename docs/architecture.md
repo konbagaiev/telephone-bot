@@ -73,7 +73,7 @@ uv pip install -e ".[dev]"
 .venv/bin/python -m ruff check .
 ```
 
-The suite creates `telbot_test` (and `telbot_migrations_test`) if absent.
+The suite creates `vividi_test` (and `vividi_migrations_test`) if absent.
 Override with `TEST_DATABASE_URL`. Each test runs in a transaction that is rolled
 back, so tests cannot see each other.
 

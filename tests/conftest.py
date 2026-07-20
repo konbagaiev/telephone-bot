@@ -21,7 +21,7 @@ from sqlalchemy import create_engine, text
 from src.config import load_config
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TEST_URL = "postgresql+psycopg://localhost/telbot_test"
+DEFAULT_TEST_URL = "postgresql+psycopg://localhost/vividi_test"
 
 
 def _test_url() -> str:

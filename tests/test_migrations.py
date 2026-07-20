@@ -19,7 +19,7 @@ EXPECTED_TABLES = {"persons", "assignments", "calls", "answers"}
 
 @pytest.fixture
 def migration_url():
-    url = _test_url().rsplit("/", 1)[0] + "/telbot_migrations_test"
+    url = _test_url().rsplit("/", 1)[0] + "/vividi_migrations_test"
     _ensure_database_exists(url)
     yield url
 
