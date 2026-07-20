@@ -22,6 +22,12 @@ including live, with AI assistance.
   on the fly without collisions.
 - **ADRs are append-only** — never edit an accepted decision; supersede it.
 - Keep this file a **router**: link to deeper docs, don't inline architecture.
+- **Never let a shell operator into a search pattern.** An unquoted `>` `<` or
+  `|` in a `grep` argument is read by the shell as redirection and *truncates the
+  target file to zero bytes before the command runs* — this has already emptied
+  two source files in this repo. Quote patterns (`grep '\->' file`) or use a
+  dedicated search tool. If a file turns up emptied right after a command you
+  ran, suspect that command first — verify before blaming anything external.
 
 ## Testing
 
