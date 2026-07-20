@@ -7,8 +7,6 @@ it cannot disturb the schema the other tests run against.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 from alembic import command
 from alembic.config import Config as AlembicConfig
@@ -29,8 +27,19 @@ def migration_url():
 def _alembic(url: str) -> AlembicConfig:
     cfg = AlembicConfig(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "migrations"))
-    os.environ["DATABASE_URL"] = url
+    cfg.set_main_option("sqlalchemy.url", url)
     return cfg
+
+
+def test_shipped_config_leaves_url_empty_so_env_falls_back():
+    """env.py resolves `sqlalchemy.url or database_url()`. Both migration tests
+    now set the URL explicitly, so nothing else exercises the fallback branch
+    that production relies on. Guard the documented risk: the URL shipped in
+    alembic.ini must stay empty/falsy, or the `or` misfires and production
+    migrations would run against an empty URL instead of DATABASE_URL.
+    """
+    cfg = AlembicConfig(str(ROOT / "alembic.ini"))
+    assert not cfg.get_main_option("sqlalchemy.url")
 
 
 def test_upgrade_from_empty_then_downgrade(migration_url, engine):
@@ -66,4 +75,3 @@ def test_upgrade_from_empty_then_downgrade(migration_url, engine):
         command.upgrade(cfg, "head")  # a second upgrade must still work
     finally:
         target.dispose()
-        os.environ["DATABASE_URL"] = _test_url()
