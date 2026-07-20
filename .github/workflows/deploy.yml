@@ -1,0 +1,60 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Serialise deploys: never race the reset / recreate on the server.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # conftest builds each test database on demand as the postgres superuser.
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/vividi_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  deploy:
+    needs: test          # a red test blocks the deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull, migrate, and recreate the container on the VPS
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh -i ~/.ssh/id_deploy "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "set -e
+             cd '${{ secrets.DEPLOY_PATH }}'
+             git fetch --prune origin && git reset --hard origin/main
+             docker compose build
+             docker compose run --rm app alembic upgrade head
+             docker compose up -d"
+
+      - name: Health check over the public URL
+        # Proves DNS -> Traefik -> TLS -> container, not just a local port.
+        run: curl -fsS --retry 5 --retry-delay 3 https://phone-bot.bagaiev.com/health
