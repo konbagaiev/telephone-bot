@@ -12,7 +12,10 @@ from sqlalchemy import engine_from_config, pool
 from src.db import database_url, metadata
 
 config = context.config
-config.set_main_option("sqlalchemy.url", database_url())
+# Prefer a URL a caller set explicitly on the config (e.g. the test suite);
+# fall back to DATABASE_URL for production, which sets nothing here (ADR-015).
+url = config.get_main_option("sqlalchemy.url") or database_url()
+config.set_main_option("sqlalchemy.url", url)
 
 target_metadata = metadata
 

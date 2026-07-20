@@ -48,7 +48,7 @@ def engine():
 
     alembic_cfg = AlembicConfig(str(ROOT / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(ROOT / "migrations"))
-    os.environ["DATABASE_URL"] = url
+    alembic_cfg.set_main_option("sqlalchemy.url", url)
 
     command.downgrade(alembic_cfg, "base")  # start from empty even after a failed run
     command.upgrade(alembic_cfg, "head")
