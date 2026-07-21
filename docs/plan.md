@@ -72,6 +72,15 @@ does not exist yet.
    any offline harness, and we want to find that out first.
 5. **Full questionnaire.** Multiple questions, required-answer completion logic,
    `Assignment.status` transitions.
+
+   **Fix carried from step 4:** placing a call does not move the assignment off
+   `pending` (`place_call_for_assignment` never sets a status; `IN_PROGRESS` is
+   defined but unused). So a second runner run before the call finishes re-picks
+   the same `pending` assignment and calls the person twice — the assignment only
+   leaves `pending` when `/stream` runs `refresh_completion` at teardown. The fix
+   is a `pending → in_progress` transition at placement time, so the next pick
+   skips an in-flight call. Coordination is via the DB, since placement (runner)
+   and completion (web app) are separate processes.
 6. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
 7. **Multilingual.** English and Russian per `Person.language`.
 8. **UI.** Only once the above works.
