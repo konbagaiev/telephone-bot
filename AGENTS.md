@@ -21,6 +21,10 @@ including live, with AI assistance.
   minutes). A timestamp needs no "next number" lookup, so specs can be created
   on the fly without collisions.
 - **ADRs are append-only** — never edit an accepted decision; supersede it.
+- **Never `git commit` or `git push` without the user's explicit request or
+  consent.** Do the work, run the tests, show what changed — then stop and let the
+  user decide when it lands. This includes not amending or pushing existing
+  commits on your own initiative. "Implement X" is not permission to commit X.
 - Keep this file a **router**: link to deeper docs, don't inline architecture.
 - **Never let a shell operator into a search pattern.** An unquoted `>` `<` or
   `|` in a `grep` argument is read by the shell as redirection and *truncates the
