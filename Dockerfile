@@ -11,6 +11,10 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY migrations ./migrations
 COPY alembic.ini ./
+# The runtime configuration (questionnaires + policy) travels with the image
+# (ADR-016: config is YAML in git). Only the tracked example dir — never the
+# git-ignored real data that may sit beside it locally.
+COPY data/example ./data/example
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
