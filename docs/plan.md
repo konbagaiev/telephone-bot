@@ -58,7 +58,9 @@ does not exist yet.
    the checkout, Docker, a `vividi` database and its credentials, secrets in a
    VPS-local `.env` (ADR-015), and a dedicated CI deploy key. Ends in: a push to
    `main` updates a live HTTPS endpoint.
-4. **Vertical slice — one live call, one question.** The whole call path end to
+4. **Vertical slice — one live call, one question.** _(in progress — code and
+   offline tests landed; the live smoke call is the remaining check.)_ The whole
+   call path end to
    end, filling the skeleton service: place a call, validate the Twilio
    signature, bridge the audio, the agent asks one question, `record_answer` is
    handled, the result is written. The public base URL is set in **both** the app

@@ -163,6 +163,19 @@ def get_or_create_person(
     return Person(id=inserted, phone=e164, name=name, language=language, attributes=attributes or {})
 
 
+def get_person(conn: Connection, person_id: int) -> Person | None:
+    row = conn.execute(select(persons).where(persons.c.id == person_id)).one_or_none()
+    if row is None:
+        return None
+    return Person(
+        id=row.id,
+        phone=row.phone,
+        name=row.name,
+        language=row.language,
+        attributes=row.attributes,
+    )
+
+
 # --- assignments ----------------------------------------------------------
 
 
@@ -216,6 +229,28 @@ def set_assignment_status(conn: Connection, assignment_id: int, status: Assignme
     )
 
 
+def next_pending_assignment(conn: Connection) -> Assignment | None:
+    """The oldest assignment still waiting to be called, or None.
+
+    One call at a time (ADR-013): the runner takes a single pending assignment
+    rather than draining a queue. Ordered by id so the choice is deterministic.
+    """
+    row = conn.execute(
+        select(assignments)
+        .where(assignments.c.status == AssignmentStatus.PENDING)
+        .order_by(assignments.c.id)
+        .limit(1)
+    ).one_or_none()
+    if row is None:
+        return None
+    return Assignment(
+        id=row.id,
+        person_id=row.person_id,
+        questionnaire_id=row.questionnaire_id,
+        status=AssignmentStatus(row.status),
+    )
+
+
 def validate_references(conn: Connection, config: Config) -> None:
     """Fail if any assignment points at a questionnaire that no longer exists.
 
@@ -248,6 +283,17 @@ def start_call(conn: Connection, assignment_id: int, carrier_call_id: str | None
         .returning(calls.c.id)
     ).scalar_one()
     return Call(id=row_id, assignment_id=assignment_id, started_at=started_at)
+
+
+def set_carrier_call_id(conn: Connection, call_id: int, carrier_call_id: str) -> None:
+    """Attach the carrier's own call id once the carrier has accepted the call.
+
+    The Call row is created before the carrier is asked to dial (its id names the
+    call in the webhook URL), so the carrier id is filled in afterwards.
+    """
+    conn.execute(
+        calls.update().where(calls.c.id == call_id).values(carrier_call_id=carrier_call_id)
+    )
 
 
 def finish_call(

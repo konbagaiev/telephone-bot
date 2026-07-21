@@ -4,10 +4,16 @@
 > change that alters the architecture. Describe shape (modules, flow), not
 > line-level detail — the code is the source of truth for details.
 
-**Status: data layer + deploy skeleton.** The questionnaire, the people, and the
-results exist, and a minimal FastAPI service (only `/health`) is deployed to the
-VPS behind Traefik by a GitHub Actions pipeline. Nothing places a call yet —
-telephony and the Realtime session are roadmap step 4 and beyond (`docs/plan.md`).
+**Status: data layer + deploy skeleton + vertical slice (one call, one
+question).** The questionnaire, the people, and the results exist; a FastAPI
+service is deployed to the VPS behind Traefik by a GitHub Actions pipeline; and
+the whole call path is wired — a runner places an outbound call, the `/voice`
+webhook returns TwiML that streams the audio to `/stream`, and the bridge relays
+it to an OpenAI Realtime session whose `record_answer` tool call is written to
+Postgres. The live call itself is verified by a manual smoke, not in CI: Realtime
+behaves differently on a phone line than in any offline harness (roadmap step 4).
+Multiple questions, policy enforcement, and multilingual operation are step 5 and
+beyond (`docs/plan.md`).
 
 ## Shape
 
@@ -30,7 +36,11 @@ publish.
 | `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`; the status enums; phone normalisation; `completion_status()` |
 | `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries |
 | `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
-| `src/app.py` | FastAPI ASGI app; `GET /health`. The Twilio webhook and Realtime WebSocket bridge join here in step 4 |
+| `src/telephony/` | The carrier boundary (ADR-004): `Carrier` Protocol in `__init__`, Twilio adapter in `twilio.py` (REST dial, signature validation, TwiML). No Twilio type leaks past it |
+| `src/agent/` | `session.py` — Realtime `session.update` and the tool definitions; `tools.py` — turning a tool call into a write (the primary test surface). The model owns speech, this owns facts (ADR-002) |
+| `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear` |
+| `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run |
+| `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge) |
 | `migrations/` | Alembic; `0001_initial` creates the four tables |
 | `Dockerfile`, `docker-compose.yml` | The app image and its service, behind Traefik on `phone-bot.bagaiev.com`, using the shared Postgres (ADR-017) |
 | `.github/workflows/deploy.yml` | On push to `main`: test → pull → migrate → recreate container → health check |
@@ -63,6 +73,34 @@ loads a git-ignored `.env` without overriding anything already set; in productio
 the real environment is the source (ADR-015). Credentials never live in the code
 default (`DEFAULT_DATABASE_URL` is passwordless) nor in git. Copy `.env.example`
 to `.env` to start.
+
+## Call path
+
+One call, end to end:
+
+1. **Runner** (`src/runner.py`) takes the next pending assignment (ADR-013),
+   creates the `Call` row, and asks the carrier to dial. The answer URL it hands
+   the carrier names the call: `…/voice?call_id=<id>`.
+2. **`POST /voice`** validates the Twilio signature (against the *public* URL,
+   reconstructed from `PUBLIC_BASE_URL` — behind Traefik the container's own URL
+   differs) and returns TwiML: `<Connect><Stream>` pointed at `/stream`, carrying
+   `call_id` as a `<Parameter>`. No `<Say>`/`<Play>` — the model owns speech.
+3. **`WS /stream`** reads the stream's `start` event for `call_id`, loads the
+   assignment and its (one) question, opens the OpenAI Realtime socket, and sends
+   `session.update` (μ-law both ways, server VAD, the two tools) followed by
+   `response.create` so the agent greets first.
+4. **The bridge** (`src/bridge.py`) relays μ-law frames unchanged in both
+   directions and flushes Twilio on barge-in. Both sides speak G.711 μ-law 8 kHz,
+   so no transcoding hop is added (ADR-003).
+5. **A tool call** (`src/agent/tools.py`) is written to Postgres: `record_answer`
+   after validating the question id, `end_call` to wind up. On teardown,
+   completion is recomputed from the answers on record — an early `end_call`
+   leaves the assignment `partial`, never `completed` (ADR-002).
+
+The seams are the carrier (a `Protocol`, faked in tests), the bridge pumps (fake
+sockets), and tool handling (synthetic tool-call events against real Postgres).
+`WS /stream` itself is the only unverified-in-CI piece — it wires the tested
+parts around two live sockets, and the manual smoke is its check.
 
 ## Deployment
 
@@ -100,6 +138,9 @@ back, so tests cannot see each other.
 | Edge-case behaviour values | `data/example/policy.yaml` — the *value* only; a new *kind* of behaviour is code plus a test |
 | What "finished" means | `completion_status()` in `src/models.py` |
 | The stored shape of anything | `src/db.py` **and** a new migration — the two must move together |
+| What the agent is told / may do | `instructions_for()` and the tool defs in `src/agent/session.py` |
+| How a tool call becomes data | `src/agent/tools.py` (`handle_tool_call`, `finalize`) |
+| The carrier (add a provider) | a new class satisfying `Carrier` in `src/telephony/`; nothing else changes |
 
-**Last verified against commit:** the commit that added the deploy pipeline and
-skeleton service (roadmap step 3).
+**Last verified against commit:** the commit that added the vertical slice — one
+call, one question (roadmap step 4).

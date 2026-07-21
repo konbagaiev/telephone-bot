@@ -1,0 +1,128 @@
+"""The media bridge: Twilio Media Streams ↔ OpenAI Realtime (ADR-003).
+
+Two directions of audio, each a small pump over a WebSocket. Because Twilio and
+Realtime both speak G.711 μ-law 8 kHz, a frame is relayed unchanged — the bridge
+never transcodes, which is what keeps it small and keeps latency out of the pause
+before the agent speaks (ADR-002).
+
+The message translations are pure functions so they can be tested without a
+socket; the pumps are thin loops over an async source and sink, so a pair of fake
+sockets exercises the wiring offline. The live sockets are joined in `app.py`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass
+from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
+
+
+class Sink(Protocol):
+    """The one thing a pump needs of the socket it writes to."""
+
+    async def send(self, text: str) -> None: ...
+
+
+# on_tool_call(name, function_call_id, arguments) — `function_call_id` is the
+# Realtime call id used to route the result back, not our Call.id.
+ToolCallHandler = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
+
+@dataclass
+class BridgeState:
+    """The little that the two pumps must share.
+
+    `stream_sid` arrives in Twilio's `start` event and is required on every frame
+    we send back, so the Realtime→Twilio pump cannot emit audio until the
+    Twilio→Realtime pump has seen `start`. `call_id` is the custom parameter the
+    TwiML carried, naming the call this audio belongs to.
+    """
+
+    stream_sid: str | None = None
+    call_id: str | None = None
+
+
+# --- pure translations ----------------------------------------------------
+
+
+def append_audio_event(payload: str) -> dict[str, Any]:
+    """A Twilio media payload, wrapped as a Realtime input-audio append."""
+    return {"type": "input_audio_buffer.append", "audio": payload}
+
+
+def media_event(stream_sid: str, payload: str) -> dict[str, Any]:
+    """A Realtime audio delta, wrapped as a Twilio outbound media frame."""
+    return {"event": "media", "streamSid": stream_sid, "media": {"payload": payload}}
+
+
+def clear_event(stream_sid: str) -> dict[str, Any]:
+    """Tell Twilio to drop audio it has buffered — barge-in (ADR-002)."""
+    return {"event": "clear", "streamSid": stream_sid}
+
+
+# --- pumps ----------------------------------------------------------------
+
+
+async def pump_twilio_to_realtime(
+    source: AsyncIterable[str], realtime: Sink, state: BridgeState
+) -> None:
+    """Relay caller audio into the model; capture the stream id and call id."""
+    async for raw in source:
+        message = json.loads(raw)
+        event = message.get("event")
+        if event == "start":
+            start = message.get("start", {})
+            state.stream_sid = start.get("streamSid")
+            state.call_id = (start.get("customParameters") or {}).get("call_id")
+        elif event == "media":
+            await realtime.send(json.dumps(append_audio_event(message["media"]["payload"])))
+        elif event == "stop":
+            return
+
+
+async def pump_realtime_to_twilio(
+    source: AsyncIterable[str],
+    twilio: Sink,
+    state: BridgeState,
+    on_tool_call: ToolCallHandler,
+) -> None:
+    """Relay agent audio back to the caller, flush on barge-in, dispatch tools."""
+    async for raw in source:
+        message = json.loads(raw)
+        kind = message.get("type")
+        if kind == "response.audio.delta" and state.stream_sid:
+            await twilio.send(json.dumps(media_event(state.stream_sid, message["delta"])))
+        elif kind == "input_audio_buffer.speech_started" and state.stream_sid:
+            await twilio.send(json.dumps(clear_event(state.stream_sid)))
+        elif kind == "response.function_call_arguments.done":
+            arguments = json.loads(message.get("arguments") or "{}")
+            await on_tool_call(
+                message.get("name", ""), message.get("call_id", ""), arguments
+            )
+
+
+async def run_bridge(
+    twilio_source: AsyncIterable[str],
+    twilio_sink: Sink,
+    realtime_source: AsyncIterable[str],
+    realtime_sink: Sink,
+    state: BridgeState,
+    on_tool_call: ToolCallHandler,
+) -> None:
+    """Run both pumps until either side ends, then stop the other.
+
+    Whichever direction finishes first (the caller hangs up, or the model closes)
+    ends the call, so the surviving pump is cancelled rather than left waiting.
+    """
+    tasks = {
+        asyncio.create_task(pump_twilio_to_realtime(twilio_source, realtime_sink, state)),
+        asyncio.create_task(
+            pump_realtime_to_twilio(realtime_source, twilio_sink, state, on_tool_call)
+        ),
+    }
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        task.result()  # surface any exception rather than swallowing it
