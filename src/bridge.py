@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
 
+from websockets.exceptions import ConnectionClosed
+
 
 class Sink(Protocol):
     """The one thing a pump needs of the socket it writes to."""
@@ -67,18 +69,26 @@ def clear_event(stream_sid: str) -> dict[str, Any]:
 async def pump_twilio_to_realtime(
     source: AsyncIterable[str], realtime: Sink, state: BridgeState
 ) -> None:
-    """Relay caller audio into the model; capture the stream id and call id."""
-    async for raw in source:
-        message = json.loads(raw)
-        event = message.get("event")
-        if event == "start":
-            start = message.get("start", {})
-            state.stream_sid = start.get("streamSid")
-            state.call_id = (start.get("customParameters") or {}).get("call_id")
-        elif event == "media":
-            await realtime.send(json.dumps(append_audio_event(message["media"]["payload"])))
-        elif event == "stop":
-            return
+    """Relay caller audio into the model; capture the stream id and call id.
+
+    If the model side has closed (e.g. the `end_call` handler closed it), a send
+    raises `ConnectionClosed`; that is how a call ends, not an error, so the pump
+    returns rather than propagating it and crashing the bridge at teardown.
+    """
+    try:
+        async for raw in source:
+            message = json.loads(raw)
+            event = message.get("event")
+            if event == "start":
+                start = message.get("start", {})
+                state.stream_sid = start.get("streamSid")
+                state.call_id = (start.get("customParameters") or {}).get("call_id")
+            elif event == "media":
+                await realtime.send(json.dumps(append_audio_event(message["media"]["payload"])))
+            elif event == "stop":
+                return
+    except ConnectionClosed:
+        return
 
 
 async def pump_realtime_to_twilio(
@@ -132,4 +142,7 @@ async def run_bridge(
     for task in pending:
         task.cancel()
     for task in done:
-        task.result()  # surface any exception rather than swallowing it
+        try:
+            task.result()  # surface a real error rather than swallowing it
+        except ConnectionClosed:
+            pass  # a socket closing is how a call ends, not a failure

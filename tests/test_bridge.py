@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+from websockets.exceptions import ConnectionClosedOK
+
 from src.bridge import (
     BridgeState,
     append_audio_event,
@@ -19,6 +21,13 @@ from src.bridge import (
     pump_twilio_to_realtime,
     run_bridge,
 )
+
+
+class ClosedSink:
+    """A sink whose peer has closed: every send raises ConnectionClosed."""
+
+    async def send(self, text):
+        raise ConnectionClosedOK(None, None)
 
 
 class FakeSource:
@@ -139,6 +148,48 @@ def test_audio_before_start_is_dropped_not_crashed():
 
     asyncio.run(pump_realtime_to_twilio(source, twilio, BridgeState(), on_tool_call))
     assert twilio.sent == []
+
+
+def test_twilio_pump_returns_when_realtime_closed_mid_send():
+    # The end_call handler closed the Realtime socket; the next caller frame we try
+    # to forward hits a closed peer. The pump must stop gracefully, not raise.
+    source = FakeSource(
+        [
+            {"event": "start", "start": {"streamSid": "MZ1"}},
+            {"event": "media", "media": {"payload": "X"}},
+        ]
+    )
+    asyncio.run(pump_twilio_to_realtime(source, ClosedSink(), BridgeState()))
+
+
+def test_run_bridge_survives_a_closed_realtime_socket():
+    # The exact first-run teardown race: forwarding audio to a Realtime socket that
+    # has just closed must let run_bridge complete, not propagate the close.
+    twilio_source = FakeSource(
+        [
+            {"event": "start", "start": {"streamSid": "MZ1"}},
+            {"event": "media", "media": {"payload": "X"}},
+        ]
+    )
+    realtime_source = FakeSource([])  # Realtime already done
+
+    async def on_tool_call(*_):
+        pass
+
+    async def drive():
+        await asyncio.wait_for(
+            run_bridge(
+                twilio_source,
+                FakeSink(),
+                realtime_source,
+                ClosedSink(),
+                BridgeState(),
+                on_tool_call,
+            ),
+            timeout=1.0,
+        )
+
+    asyncio.run(drive())
 
 
 def test_run_bridge_stops_when_the_caller_hangs_up():

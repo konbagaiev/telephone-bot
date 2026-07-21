@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 
 import websockets
-from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from websockets.exceptions import ConnectionClosed
 
 from src import db
 from src.agent.session import session_update
@@ -152,43 +153,47 @@ async def stream(ws: WebSocket) -> None:
     ended_by_agent = False
     twilio_sink: Sink = _TwilioSink(ws)
 
-    async with websockets.connect(
-        _realtime_url(),
-        additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
-    ) as realtime:
-        await realtime.send(json.dumps(session_update(question)))
-        # Ask the agent to speak first, so the callee is greeted without a pause.
-        await realtime.send(json.dumps({"type": "response.create"}))
-
-        async def on_tool_call(name: str, function_call_id: str, arguments: dict) -> None:
-            nonlocal ended_by_agent
-            with engine.begin() as conn:
-                session = CallSession(conn, config, questionnaire, assignment.id, call_id)
-                result = handle_tool_call(session, name, arguments)
-            # Feed the outcome back so the model can react (e.g. re-ask on refusal).
-            await realtime.send(
-                json.dumps(
-                    {
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type": "function_call_output",
-                            "call_id": function_call_id,
-                            "output": result.message,
-                        },
-                    }
-                )
-            )
+    try:
+        async with websockets.connect(
+            _realtime_url(),
+            additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+        ) as realtime:
+            await realtime.send(json.dumps(session_update(question)))
+            # Ask the agent to speak first, so the callee is greeted without a pause.
             await realtime.send(json.dumps({"type": "response.create"}))
-            if result.ended:
-                ended_by_agent = True
-                await realtime.close()
 
-        await run_bridge(
-            twilio_source, twilio_sink, realtime, realtime, state, on_tool_call
-        )
+            async def on_tool_call(name: str, function_call_id: str, arguments: dict) -> None:
+                nonlocal ended_by_agent
+                with engine.begin() as conn:
+                    session = CallSession(conn, config, questionnaire, assignment.id, call_id)
+                    result = handle_tool_call(session, name, arguments)
+                # Feed the outcome back so the model can react (e.g. re-ask on refusal).
+                await realtime.send(
+                    json.dumps(
+                        {
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": function_call_id,
+                                "output": result.message,
+                            },
+                        }
+                    )
+                )
+                await realtime.send(json.dumps({"type": "response.create"}))
+                if result.ended:
+                    ended_by_agent = True
+                    await realtime.close()
 
-    # The audio has ended; settle the call and recompute completion (ADR-002).
-    end_reason = EndReason.AGENT_COMPLETED if ended_by_agent else EndReason.REMOTE_ENDED
-    with engine.begin() as conn:
-        session = CallSession(conn, config, questionnaire, assignment.id, call_id)
-        finalize(session, end_reason)
+            try:
+                await run_bridge(
+                    twilio_source, twilio_sink, realtime, realtime, state, on_tool_call
+                )
+            except (WebSocketDisconnect, ConnectionClosed):
+                pass  # a hang-up or a clean end-of-call close, not an error
+    finally:
+        # However the call ended, settle it and recompute completion (ADR-002).
+        end_reason = EndReason.AGENT_COMPLETED if ended_by_agent else EndReason.REMOTE_ENDED
+        with engine.begin() as conn:
+            session = CallSession(conn, config, questionnaire, assignment.id, call_id)
+            finalize(session, end_reason)
