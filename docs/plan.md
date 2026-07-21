@@ -58,8 +58,10 @@ does not exist yet.
    the checkout, Docker, a `vividi` database and its credentials, secrets in a
    VPS-local `.env` (ADR-015), and a dedicated CI deploy key. Ends in: a push to
    `main` updates a live HTTPS endpoint.
-4. **Vertical slice — one live call, one question.** _(in progress — code and
-   offline tests landed; the live smoke call is the remaining check.)_ The whole
+4. **Vertical slice — one live call, one question.** _(done — live smoke passed
+   2026-07-21: a real call recorded an answer and finalised to `completed`, over
+   the GA Realtime API. Findings along the way: config must ship in the image, the
+   Realtime GA shape, and finalise-on-teardown — all in `specs/done/`.)_ The whole
    call path end to
    end, filling the skeleton service: place a call, validate the Twilio
    signature, bridge the audio, the agent asks one question, `record_answer` is
@@ -72,6 +74,15 @@ does not exist yet.
    any offline harness, and we want to find that out first.
 5. **Full questionnaire.** Multiple questions, required-answer completion logic,
    `Assignment.status` transitions.
+
+   **Confirmed limitation from step 4:** `/stream` asks only
+   `questionnaire.questions[0]` (hard-coded), so a questionnaire that defines more
+   than one question — like the example's `delivery_feedback` (`was_on_time` +
+   `improvement`) — still gets only the first asked, and only that one can be
+   recorded. Observed live on 2026-07-21: the second question was never put. Step 5
+   iterates all questions in order and drives the conversation until every required
+   one is answered (completion is already computed over the full set in
+   `completion_status`).
 
    **Fix carried from step 4:** placing a call does not move the assignment off
    `pending` (`place_call_for_assignment` never sets a status; `IN_PROGRESS` is

@@ -73,10 +73,7 @@ Live smoke (on demand):
   (ADR-005).
 
 ## Status
-Fix implemented and the offline acceptance is met (bridge pumps tolerate a closed
-peer; `run_bridge` no longer re-raises `ConnectionClosed`; `/stream` finalises in a
-`finally`). Suite green (54), ruff clean. **Not yet deployed, and the live-smoke
-half is unverified** — a clean call that ends via `end_call` and lands
-`disposition=answered` / `end_reason=agent_completed` / `completed`. Stays in
-`active/` until that live re-verification, which also unblocks the vertical-slice
-spec.
+Done. Offline acceptance met (54 green, ruff clean) and **verified live**: call 3
+ended via `end_call` with `disposition=answered`, `end_reason=agent_completed`,
+`ended_at` set, the assignment recomputed to `completed`, and no ERROR in the
+logs. This also unblocked the vertical-slice spec (its live smoke is now green).

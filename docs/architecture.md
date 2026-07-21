@@ -87,14 +87,20 @@ One call, end to end:
    `call_id` as a `<Parameter>`. No `<Say>`/`<Play>` — the model owns speech.
 3. **`WS /stream`** reads the stream's `start` event for `call_id`, loads the
    assignment and its (one) question, opens the OpenAI Realtime socket, and sends
-   `session.update` (μ-law both ways, server VAD, the two tools) followed by
-   `response.create` so the agent greets first.
+   `session.update` followed by `response.create` so the agent greets first. This
+   is the **GA (`gpt-realtime`) API shape**, not the beta one (a live-smoke
+   finding): `session.type = "realtime"`, audio config under
+   `session.audio.input/output` with format `audio/pcmu` (= G.711 μ-law), server
+   VAD and transcription under `audio.input`, and no `OpenAI-Beta` header.
 4. **The bridge** (`src/bridge.py`) relays μ-law frames unchanged in both
    directions and flushes Twilio on barge-in. Both sides speak G.711 μ-law 8 kHz,
-   so no transcoding hop is added (ADR-003).
+   so no transcoding hop is added (ADR-003). GA server events: output audio is
+   `response.output_audio.delta`; a tool call arrives inside `response.done` as a
+   `response.output[]` item of `type == "function_call"`.
 5. **A tool call** (`src/agent/tools.py`) is written to Postgres: `record_answer`
-   after validating the question id, `end_call` to wind up. On teardown,
-   completion is recomputed from the answers on record — an early `end_call`
+   after validating the question id, `end_call` to wind up. On teardown —
+   reached on every exit path via a `finally`, even when a socket closes mid-flush
+   — completion is recomputed from the answers on record; an early `end_call`
    leaves the assignment `partial`, never `completed` (ADR-002).
 
 The seams are the carrier (a `Protocol`, faked in tests), the bridge pumps (fake
@@ -142,5 +148,6 @@ back, so tests cannot see each other.
 | How a tool call becomes data | `src/agent/tools.py` (`handle_tool_call`, `finalize`) |
 | The carrier (add a provider) | a new class satisfying `Carrier` in `src/telephony/`; nothing else changes |
 
-**Last verified against commit:** the commit that added the vertical slice — one
-call, one question (roadmap step 4).
+**Last verified against commit:** the teardown-finalise fix (roadmap step 4). The
+vertical slice's live smoke passed on 2026-07-21 — a real call recorded an answer
+and finalised to `completed`, over the GA Realtime API.
