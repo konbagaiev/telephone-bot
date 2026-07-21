@@ -87,19 +87,26 @@ async def pump_realtime_to_twilio(
     state: BridgeState,
     on_tool_call: ToolCallHandler,
 ) -> None:
-    """Relay agent audio back to the caller, flush on barge-in, dispatch tools."""
+    """Relay agent audio back to the caller, flush on barge-in, dispatch tools.
+
+    GA event names: output audio is `response.output_audio.delta`, and a tool call
+    is delivered inside `response.done` as an item of `response.output[]` with
+    `type == "function_call"` — not as a standalone event.
+    """
     async for raw in source:
         message = json.loads(raw)
         kind = message.get("type")
-        if kind == "response.audio.delta" and state.stream_sid:
+        if kind == "response.output_audio.delta" and state.stream_sid:
             await twilio.send(json.dumps(media_event(state.stream_sid, message["delta"])))
         elif kind == "input_audio_buffer.speech_started" and state.stream_sid:
             await twilio.send(json.dumps(clear_event(state.stream_sid)))
-        elif kind == "response.function_call_arguments.done":
-            arguments = json.loads(message.get("arguments") or "{}")
-            await on_tool_call(
-                message.get("name", ""), message.get("call_id", ""), arguments
-            )
+        elif kind == "response.done":
+            for item in (message.get("response", {}).get("output") or []):
+                if item.get("type") == "function_call":
+                    arguments = json.loads(item.get("arguments") or "{}")
+                    await on_tool_call(
+                        item.get("name", ""), item.get("call_id", ""), arguments
+                    )
 
 
 async def run_bridge(

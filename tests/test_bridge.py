@@ -80,13 +80,23 @@ def test_twilio_to_realtime_captures_ids_and_relays_audio():
 def test_realtime_to_twilio_relays_audio_flushes_and_dispatches():
     source = FakeSource(
         [
-            {"type": "response.audio.delta", "delta": "AGENT_AUDIO"},
+            {"type": "response.output_audio.delta", "delta": "AGENT_AUDIO"},
             {"type": "input_audio_buffer.speech_started"},
             {
-                "type": "response.function_call_arguments.done",
-                "name": "record_answer",
-                "call_id": "fc_1",
-                "arguments": json.dumps({"question_id": "was_on_time", "raw": "yes"}),
+                # GA delivers a tool call inside response.done, not as its own event.
+                "type": "response.done",
+                "response": {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "record_answer",
+                            "call_id": "fc_1",
+                            "arguments": json.dumps(
+                                {"question_id": "was_on_time", "raw": "yes"}
+                            ),
+                        }
+                    ]
+                },
             },
         ]
     )
@@ -104,10 +114,24 @@ def test_realtime_to_twilio_relays_audio_flushes_and_dispatches():
     assert calls == [("record_answer", "fc_1", {"question_id": "was_on_time", "raw": "yes"})]
 
 
+def test_response_done_without_a_function_call_dispatches_nothing():
+    # A plain spoken turn ends in response.done with no function_call items.
+    source = FakeSource(
+        [{"type": "response.done", "response": {"output": [{"type": "message"}]}}]
+    )
+    calls = []
+
+    async def on_tool_call(*args):
+        calls.append(args)
+
+    asyncio.run(pump_realtime_to_twilio(source, FakeSink(), BridgeState("MZ1"), on_tool_call))
+    assert calls == []
+
+
 def test_audio_before_start_is_dropped_not_crashed():
     # A delta arriving before Twilio's `start` has no stream id to address; it is
     # skipped rather than raising.
-    source = FakeSource([{"type": "response.audio.delta", "delta": "EARLY"}])
+    source = FakeSource([{"type": "response.output_audio.delta", "delta": "EARLY"}])
     twilio = FakeSink()
 
     async def on_tool_call(*_):
@@ -120,7 +144,7 @@ def test_audio_before_start_is_dropped_not_crashed():
 def test_run_bridge_stops_when_the_caller_hangs_up():
     # Twilio side ends (stop); the Realtime side would otherwise wait forever.
     twilio_source = FakeSource([{"event": "stop"}])
-    realtime_source = FakeSource([{"type": "response.audio.delta", "delta": "X"}])
+    realtime_source = FakeSource([{"type": "response.output_audio.delta", "delta": "X"}])
 
     async def on_tool_call(*_):
         pass

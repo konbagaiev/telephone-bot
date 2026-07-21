@@ -154,10 +154,7 @@ async def stream(ws: WebSocket) -> None:
 
     async with websockets.connect(
         _realtime_url(),
-        additional_headers={
-            "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-            "OpenAI-Beta": "realtime=v1",
-        },
+        additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
     ) as realtime:
         await realtime.send(json.dumps(session_update(question)))
         # Ask the agent to speak first, so the callee is greeted without a pause.

@@ -86,22 +86,32 @@ def instructions_for(question: Question) -> str:
     )
 
 
-def session_update(question: Question, voice: str = "alloy") -> dict[str, Any]:
+def session_update(question: Question, voice: str = "marin") -> dict[str, Any]:
     """The `session.update` event sent once the Realtime socket is open.
 
-    μ-law in and out (matches Twilio), server VAD for turn-taking, transcription
-    on so the transcript comes from the Realtime API itself (ADR-011), and the two
-    tools the model may call.
+    GA (gpt-realtime) shape: audio config lives under `session.audio.input/output`,
+    and `audio/pcmu` is G.711 μ-law — the same frame Twilio streams, so nothing is
+    transcoded (ADR-003). Server VAD does turn-taking (ADR-002); input transcription
+    is on so the transcript comes from the Realtime API itself (ADR-011); the two
+    tools are what the model may call.
     """
     return {
         "type": "session.update",
         "session": {
+            "type": "realtime",
             "instructions": instructions_for(question),
-            "voice": voice,
-            "input_audio_format": "g711_ulaw",
-            "output_audio_format": "g711_ulaw",
-            "input_audio_transcription": {"model": "whisper-1"},
-            "turn_detection": {"type": "server_vad"},
+            "output_modalities": ["audio"],
+            "audio": {
+                "input": {
+                    "format": {"type": "audio/pcmu"},
+                    "turn_detection": {"type": "server_vad"},
+                    "transcription": {"model": "whisper-1"},
+                },
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    "voice": voice,
+                },
+            },
             "tools": [RECORD_ANSWER_TOOL, END_CALL_TOOL],
             "tool_choice": "auto",
         },
