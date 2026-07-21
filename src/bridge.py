@@ -46,20 +46,24 @@ class BridgeState:
 
 
 # --- pure translations ----------------------------------------------------
+#
+# Named by their role in the bridge (who speaks to whom), not by the wire verb.
+# The call is outbound, so the "respondent" is the person we called — never the
+# "caller", which is us — and the "agent" is the model that speaks for us (ADR-002).
 
 
-def append_audio_event(payload: str) -> dict[str, Any]:
-    """A Twilio media payload, wrapped as a Realtime input-audio append."""
+def respondent_audio_to_agent(payload: str) -> dict[str, Any]:
+    """The respondent's audio, wrapped as a Realtime input-audio append."""
     return {"type": "input_audio_buffer.append", "audio": payload}
 
 
-def media_event(stream_sid: str, payload: str) -> dict[str, Any]:
-    """A Realtime audio delta, wrapped as a Twilio outbound media frame."""
+def agent_audio_to_respondent(stream_sid: str, payload: str) -> dict[str, Any]:
+    """The agent's audio, wrapped as a Twilio outbound media frame."""
     return {"event": "media", "streamSid": stream_sid, "media": {"payload": payload}}
 
 
-def clear_event(stream_sid: str) -> dict[str, Any]:
-    """Tell Twilio to drop audio it has buffered — barge-in (ADR-002)."""
+def interrupt_agent_playback(stream_sid: str) -> dict[str, Any]:
+    """Tell Twilio to drop the agent audio it has buffered — barge-in (ADR-002)."""
     return {"event": "clear", "streamSid": stream_sid}
 
 
@@ -69,7 +73,7 @@ def clear_event(stream_sid: str) -> dict[str, Any]:
 async def pump_twilio_to_realtime(
     source: AsyncIterable[str], realtime: Sink, state: BridgeState
 ) -> None:
-    """Relay caller audio into the model; capture the stream id and call id.
+    """Relay the respondent's audio into the model; capture the stream id and call id.
 
     If the model side has closed (e.g. the `end_call` handler closed it), a send
     raises `ConnectionClosed`; that is how a call ends, not an error, so the pump
@@ -84,7 +88,9 @@ async def pump_twilio_to_realtime(
                 state.stream_sid = start.get("streamSid")
                 state.call_id = (start.get("customParameters") or {}).get("call_id")
             elif event == "media":
-                await realtime.send(json.dumps(append_audio_event(message["media"]["payload"])))
+                await realtime.send(
+                    json.dumps(respondent_audio_to_agent(message["media"]["payload"]))
+                )
             elif event == "stop":
                 return
     except ConnectionClosed:
@@ -97,7 +103,7 @@ async def pump_realtime_to_twilio(
     state: BridgeState,
     on_tool_call: ToolCallHandler,
 ) -> None:
-    """Relay agent audio back to the caller, flush on barge-in, dispatch tools.
+    """Relay the agent's audio back to the respondent, flush on barge-in, dispatch tools.
 
     GA event names: output audio is `response.output_audio.delta`, and a tool call
     is delivered inside `response.done` as an item of `response.output[]` with
@@ -107,10 +113,16 @@ async def pump_realtime_to_twilio(
         message = json.loads(raw)
         kind = message.get("type")
         if kind == "response.output_audio.delta" and state.stream_sid:
-            await twilio.send(json.dumps(media_event(state.stream_sid, message["delta"])))
+            # The agent is speaking: forward each audio chunk to the respondent.
+            await twilio.send(
+                json.dumps(agent_audio_to_respondent(state.stream_sid, message["delta"]))
+            )
         elif kind == "input_audio_buffer.speech_started" and state.stream_sid:
-            await twilio.send(json.dumps(clear_event(state.stream_sid)))
+            # The respondent talked over the agent (barge-in): flush the agent audio
+            # Twilio still has queued so it stops mid-sentence and the person is heard.
+            await twilio.send(json.dumps(interrupt_agent_playback(state.stream_sid)))
         elif kind == "response.done":
+            # A turn finished; if it carried a tool call, hand it to the agent layer.
             for item in (message.get("response", {}).get("output") or []):
                 if item.get("type") == "function_call":
                     arguments = json.loads(item.get("arguments") or "{}")
@@ -129,8 +141,9 @@ async def run_bridge(
 ) -> None:
     """Run both pumps until either side ends, then stop the other.
 
-    Whichever direction finishes first (the caller hangs up, or the model closes)
-    ends the call, so the surviving pump is cancelled rather than left waiting.
+    Whichever direction finishes first (the respondent hangs up, or the model
+    closes) ends the call, so the surviving pump is cancelled rather than left
+    waiting.
     """
     tasks = {
         asyncio.create_task(pump_twilio_to_realtime(twilio_source, realtime_sink, state)),

@@ -72,7 +72,7 @@ def health() -> dict[str, str]:
 
 @app.post("/voice")
 async def voice(request: Request) -> Response:
-    """Twilio requests this when the callee answers; we reply with TwiML.
+    """Twilio requests this when the respondent answers; we reply with TwiML.
 
     The reply connects the call's audio to `/stream` (see `stream_twiml`). The
     `call_id` query parameter — set by the runner when it placed the call — is
@@ -159,7 +159,7 @@ async def stream(ws: WebSocket) -> None:
             additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
         ) as realtime:
             await realtime.send(json.dumps(session_update(question)))
-            # Ask the agent to speak first, so the callee is greeted without a pause.
+            # Ask the agent to speak first, so the respondent is greeted without a pause.
             await realtime.send(json.dumps({"type": "response.create"}))
 
             async def on_tool_call(name: str, function_call_id: str, arguments: dict) -> None:

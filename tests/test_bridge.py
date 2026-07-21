@@ -14,9 +14,9 @@ from websockets.exceptions import ConnectionClosedOK
 
 from src.bridge import (
     BridgeState,
-    append_audio_event,
-    clear_event,
-    media_event,
+    respondent_audio_to_agent,
+    interrupt_agent_playback,
+    agent_audio_to_respondent,
     pump_realtime_to_twilio,
     pump_twilio_to_realtime,
     run_bridge,
@@ -58,13 +58,13 @@ class FakeSink:
 
 
 def test_translations_are_frame_for_frame():
-    assert append_audio_event("PAYLOAD") == {
+    assert respondent_audio_to_agent("PAYLOAD") == {
         "type": "input_audio_buffer.append",
         "audio": "PAYLOAD",
     }
-    assert media_event("MZ1", "PAYLOAD")["media"]["payload"] == "PAYLOAD"
-    assert media_event("MZ1", "PAYLOAD")["streamSid"] == "MZ1"
-    assert clear_event("MZ1") == {"event": "clear", "streamSid": "MZ1"}
+    assert agent_audio_to_respondent("MZ1", "PAYLOAD")["media"]["payload"] == "PAYLOAD"
+    assert agent_audio_to_respondent("MZ1", "PAYLOAD")["streamSid"] == "MZ1"
+    assert interrupt_agent_playback("MZ1") == {"event": "clear", "streamSid": "MZ1"}
 
 
 def test_twilio_to_realtime_captures_ids_and_relays_audio():
@@ -118,8 +118,8 @@ def test_realtime_to_twilio_relays_audio_flushes_and_dispatches():
 
     asyncio.run(pump_realtime_to_twilio(source, twilio, state, on_tool_call))
 
-    assert media_event("MZ1", "AGENT_AUDIO") in twilio.sent
-    assert clear_event("MZ1") in twilio.sent
+    assert agent_audio_to_respondent("MZ1", "AGENT_AUDIO") in twilio.sent
+    assert interrupt_agent_playback("MZ1") in twilio.sent
     assert calls == [("record_answer", "fc_1", {"question_id": "was_on_time", "raw": "yes"})]
 
 
