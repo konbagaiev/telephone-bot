@@ -158,7 +158,7 @@ and tests inject it — but required before retries fire on the live line.
    (`src/policy.py`) with retry-on-disconnect and refusal-reason; the rest parked.
    Retries only *fire* once something runs the runner on a schedule — see O9.
 8. **Multilingual.** English and Russian per `Person.language`.
-9. **UI.** _(done 2026-07-22, spec `2026-07-22-0923` in `specs/active/`, ADR-023.)_
+9. **UI.** _(done 2026-07-22, spec `2026-07-22-0923` in `specs/done/`, ADR-023.)_
    A minimal token-gated `/ui` admin surface in the same ASGI app, server-rendered
    (Jinja, no JS build). Built ahead of steps 7–8 because ADR-006's precondition —
    a system that already runs — is met (call 7). Surfaces delivered:
@@ -171,9 +171,10 @@ and tests inject it — but required before retries fire on the live line.
    - **Read the transcript** — the stored `transcript_segments` per call (ADR-022),
      for comparing what was said against what was recorded.
    Verified in CI (`tests/test_ui.py`, gate + wiring; `tests/test_storage.py`, the
-   reset/delete boundary). Live smoke still owed on the deployed instance. `UI_TOKEN`
-   is read from the environment for now; it moves into the typed settings object when
-   spec `2026-07-21-1448` lands.
+   reset/delete boundary) and in prod after deploy (gate: `/ui` 401 without token,
+   200 with, `/voice` still 403-by-signature). `UI_TOKEN` is read from the
+   environment for now; it moves into the typed settings object when spec
+   `2026-07-21-1448` lands.
 10. **Edge-case testing.** Deliberately exercise the messy real-line conditions a
     happy-path smoke never hits, and make the stack behave under each:
     - **Background noise** — a TV or a room of people: server VAD treats it as

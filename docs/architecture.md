@@ -172,8 +172,11 @@ back, so tests cannot see each other.
 | The carrier (add a provider) | a new class satisfying `Carrier` in `src/telephony/`; nothing else changes |
 | The admin UI (pages, forms) | the `/ui` router in `src/app.py` and the templates in `src/templates/` (ADR-023) |
 
-**Last verified against commit:** the full-questionnaire slice (roadmap step 6),
-readability follow-ups included. Live smoke on 2026-07-22 (call 7): a real call
-asked both questions in order, recorded both answers, moved the assignment
+**Last verified against commit:** the admin UI (roadmap step 9, ADR-023),
+deployed to `phone-bot.bagaiev.com` on 2026-07-22 and verified in prod — the gate
+behaves (`/ui` 401 without the token, 200 with it, `/voice` still 403-by-signature,
+so the token never reached the webhook) and the panel works. It sits on the
+full-questionnaire slice (step 6), live-smoked on call 7: a real call asked both
+questions in order, recorded both answers, moved the assignment
 `in_progress → completed`, stored the transcript for both roles, and let the agent
 finish its goodbye before hanging up — over the GA Realtime API.
