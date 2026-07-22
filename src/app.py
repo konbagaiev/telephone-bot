@@ -11,6 +11,7 @@ behind the `Carrier` boundary (ADR-004).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -23,7 +24,14 @@ from websockets.exceptions import ConnectionClosed
 from src import db
 from src.agent.session import session_update
 from src.agent.tools import CallSession, finalize, handle_tool_call
-from src.bridge import BridgeState, Sink, run_bridge
+from src.bridge import (
+    END_OF_CALL_MARK,
+    BridgeState,
+    Sink,
+    await_playback_drained,
+    end_of_call_mark,
+    run_bridge,
+)
 from src.config import load_config
 from src.models import EndReason, TranscriptRole
 from src.telephony.twilio import stream_twiml, validate_signature
@@ -33,6 +41,12 @@ app = FastAPI()
 log = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+# When the agent ends the call, wait up to this long for Twilio to report the
+# goodbye played, then a short grace, before closing — so the closing words are
+# not clipped. The timeout is the safety net if the mark never echoes.
+_DRAIN_TIMEOUT_SECONDS = 3.0
+_GOODBYE_GRACE_SECONDS = 0.5
 
 
 def _config_dir() -> Path:
@@ -182,10 +196,24 @@ async def stream(ws: WebSocket) -> None:
                         }
                     )
                 )
-                await realtime.send(json.dumps({"type": "response.create"}))
-                if result.ended:
-                    ended_by_agent = True
-                    await realtime.close()
+                if not result.ended:
+                    await realtime.send(json.dumps({"type": "response.create"}))
+                    return
+
+                ended_by_agent = True
+                # The agent has said goodbye, but Twilio still has it buffered — the
+                # model generates audio faster than it plays. Mark the end of the
+                # audio, wait (bounded) for Twilio to report it played, then a short
+                # grace, so the closing words are heard before the sockets close.
+                if state.stream_sid:
+                    await twilio_sink.send(
+                        json.dumps(end_of_call_mark(state.stream_sid, END_OF_CALL_MARK))
+                    )
+                    await await_playback_drained(
+                        state.playback_drained, _DRAIN_TIMEOUT_SECONDS
+                    )
+                    await asyncio.sleep(_GOODBYE_GRACE_SECONDS)
+                await realtime.close()
 
             async def on_transcript(role: str, text: str) -> None:
                 # A debug record (ADR-011), not the call's purpose: its write must

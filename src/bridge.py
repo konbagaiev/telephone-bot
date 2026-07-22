@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
 
 from websockets.exceptions import ConnectionClosed
@@ -27,6 +27,13 @@ log = logging.getLogger(__name__)
 # event is logged (see pump_realtime_to_twilio) rather than silently dropped.
 RESPONDENT_TRANSCRIPT_EVENT = "conversation.item.input_audio_transcription.completed"
 AGENT_TRANSCRIPT_EVENT = "response.output_audio_transcript.done"
+
+# The Twilio mark we send after the agent's last audio frame when the agent ends
+# the call. Twilio echoes a `mark` event back once it has played everything queued
+# up to it, which is how we know the goodbye has actually been heard before we
+# close the sockets (the model finishes generating the audio well before Twilio
+# finishes playing it).
+END_OF_CALL_MARK = "end-of-call"
 
 
 class Sink(Protocol):
@@ -56,6 +63,9 @@ class BridgeState:
 
     stream_sid: str | None = None
     call_id: str | None = None
+    # Set when Twilio echoes back the end-of-call mark — i.e. it has finished
+    # playing the agent's goodbye, so the sockets can be closed without clipping it.
+    playback_drained: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 # --- pure translations ----------------------------------------------------
@@ -78,6 +88,12 @@ def agent_audio_to_respondent(stream_sid: str, payload: str) -> dict[str, Any]:
 def interrupt_agent_playback(stream_sid: str) -> dict[str, Any]:
     """Tell Twilio to drop the agent audio it has buffered — barge-in (ADR-002)."""
     return {"event": "clear", "streamSid": stream_sid}
+
+
+def end_of_call_mark(stream_sid: str, name: str) -> dict[str, Any]:
+    """A Twilio `mark` placed after the agent's last audio frame; Twilio echoes it
+    back once it has played everything queued up to it (see END_OF_CALL_MARK)."""
+    return {"event": "mark", "streamSid": stream_sid, "mark": {"name": name}}
 
 
 # --- pumps ----------------------------------------------------------------
@@ -104,6 +120,11 @@ async def pump_twilio_to_realtime(
                 await realtime.send(
                     json.dumps(respondent_audio_to_agent(message["media"]["payload"]))
                 )
+            elif event == "mark":
+                # Twilio echoes our end-of-call mark once it has played the goodbye;
+                # signal the teardown that it is safe to close (see END_OF_CALL_MARK).
+                if (message.get("mark") or {}).get("name") == END_OF_CALL_MARK:
+                    state.playback_drained.set()
             elif event == "stop":
                 return
     except ConnectionClosed:
@@ -156,6 +177,21 @@ async def pump_realtime_to_twilio(
                     await on_tool_call(
                         item.get("name", ""), item.get("call_id", ""), arguments
                     )
+
+
+async def await_playback_drained(drained: asyncio.Event, timeout: float) -> bool:
+    """Wait until Twilio reports the queued audio has played (the end-of-call mark
+    echoed), or give up after `timeout` seconds.
+
+    Returns True if it drained, False on timeout. The caller closes the sockets
+    either way — the timeout is the safety net for when the mark never comes back
+    (the respondent already hung up, or the socket is gone).
+    """
+    try:
+        await asyncio.wait_for(drained.wait(), timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
 
 
 async def run_bridge(

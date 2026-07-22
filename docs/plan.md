@@ -88,6 +88,11 @@ does not exist yet.
      `record_answer`, not transcribed. Storing the real transcript (spec
      `2026-07-22-0012`) is the first move: it makes the divergence visible.
      Repointing `raw` at the transcript is a later, separate decision.
+   - **The goodbye is clipped on hang-up (2026-07-22).** When the agent ends the
+     call, `end_call` closed the sockets immediately while Twilio still had the
+     goodbye buffered, so the closing words were cut. Fixed by draining Twilio
+     playback (an end-of-call `mark` + grace) before closing — spec
+     `2026-07-22-0844`.
    The transcript-storage spec is the debugging instrument for this step.
 6. **Full questionnaire.** _(done 2026-07-22, spec `2026-07-22-0755` in
    `specs/done/` — offline-verified; live smoke still owed.)_ The model is handed

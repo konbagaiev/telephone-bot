@@ -13,10 +13,13 @@ import json
 from websockets.exceptions import ConnectionClosedOK
 
 from src.bridge import (
+    END_OF_CALL_MARK,
     BridgeState,
     respondent_audio_to_agent,
     interrupt_agent_playback,
     agent_audio_to_respondent,
+    await_playback_drained,
+    end_of_call_mark,
     pump_realtime_to_twilio,
     pump_twilio_to_realtime,
     run_bridge,
@@ -69,6 +72,56 @@ def test_translations_are_frame_for_frame():
     assert agent_audio_to_respondent("MZ1", "PAYLOAD")["media"]["payload"] == "PAYLOAD"
     assert agent_audio_to_respondent("MZ1", "PAYLOAD")["streamSid"] == "MZ1"
     assert interrupt_agent_playback("MZ1") == {"event": "clear", "streamSid": "MZ1"}
+
+
+def test_end_of_call_mark_is_a_named_twilio_mark():
+    assert end_of_call_mark("MZ1", "end-of-call") == {
+        "event": "mark",
+        "streamSid": "MZ1",
+        "mark": {"name": "end-of-call"},
+    }
+
+
+def test_end_of_call_mark_echo_signals_playback_drained():
+    # Twilio echoes our end-of-call mark once it has played the goodbye; the pump
+    # sets the event the teardown waits on before closing the sockets.
+    source = FakeSource(
+        [
+            {"event": "start", "start": {"streamSid": "MZ1"}},
+            {"event": "mark", "mark": {"name": END_OF_CALL_MARK}},
+        ]
+    )
+    state = BridgeState()
+    asyncio.run(pump_twilio_to_realtime(source, FakeSink(), state))
+    assert state.playback_drained.is_set()
+
+
+def test_an_unrelated_mark_does_not_signal_drained():
+    source = FakeSource(
+        [
+            {"event": "start", "start": {"streamSid": "MZ1"}},
+            {"event": "mark", "mark": {"name": "something-else"}},
+        ]
+    )
+    state = BridgeState()
+    asyncio.run(pump_twilio_to_realtime(source, FakeSink(), state))
+    assert not state.playback_drained.is_set()
+
+
+def test_await_playback_drained_true_when_already_set():
+    async def drive():
+        event = asyncio.Event()
+        event.set()
+        return await await_playback_drained(event, timeout=1.0)
+
+    assert asyncio.run(drive()) is True
+
+
+def test_await_playback_drained_false_on_timeout():
+    async def drive():
+        return await await_playback_drained(asyncio.Event(), timeout=0.01)
+
+    assert asyncio.run(drive()) is False
 
 
 def test_twilio_to_realtime_captures_ids_and_relays_audio():

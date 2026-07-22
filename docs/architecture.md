@@ -39,7 +39,7 @@ publish.
 | `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
 | `src/telephony/` | The carrier boundary (ADR-004): `Carrier` Protocol in `__init__`, Twilio adapter in `twilio.py` (REST dial, signature validation, TwiML). No Twilio type leaks past it |
 | `src/agent/` | `session.py` — Realtime `session.update` and the tool definitions; `tools.py` — turning a tool call into a write (the primary test surface). The model owns speech, this owns facts (ADR-002) |
-| `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear`; dispatches tool calls and transcription events (ADR-011) out to callbacks |
+| `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear`; an end-of-call `mark` so an agent-ended call drains Twilio playback before closing; dispatches tool calls and transcription events (ADR-011) out to callbacks |
 | `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run |
 | `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge) |
 | `migrations/` | Alembic; `0001_initial` creates the four tables, `0002` adds `transcript_segments` |
@@ -107,7 +107,10 @@ One call, end to end:
    `transcript_segments` — a debug record of what was actually said, isolated so a
    failed write never breaks the call.
 5. **A tool call** (`src/agent/tools.py`) is written to Postgres: `record_answer`
-   after validating the question id, `end_call` to wind up. On teardown —
+   after validating the question id, `end_call` to wind up. When the **agent** ends
+   the call, teardown first drains Twilio playback — it sends an end-of-call `mark`
+   and waits (bounded) for Twilio to echo it, plus a short grace — so the agent's
+   goodbye is heard, not clipped, before the sockets close. On teardown —
    reached on every exit path via a `finally`, even when a socket closes mid-flush
    — completion is recomputed from the answers on record; an early `end_call`
    leaves the assignment `partial`, never `completed` (ADR-002).
