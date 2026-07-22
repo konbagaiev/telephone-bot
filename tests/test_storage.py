@@ -9,12 +9,20 @@ from src.db import (
     add_transcript_segment,
     answers_for,
     answered_question_ids,
+    assignments_for_person,
+    calls_for,
     create_assignment,
+    delete_assignment,
+    delete_person,
     finish_call,
+    get_assignment,
     get_or_create_person,
+    get_person,
+    list_persons,
     persons,
     record_answer,
     refresh_completion,
+    reset_assignment,
     start_call,
     transcript_for,
     validate_references,
@@ -144,3 +152,71 @@ def test_valid_references_pass(conn, example_config):
     person = get_or_create_person(conn, E164, default_region="ES")
     create_assignment(conn, person.id, "delivery_feedback")
     validate_references(conn, example_config)
+
+
+# --- admin UI queries (roadmap step 9) ------------------------------------
+
+
+def _seed_call_with_data(conn, assignment_id: int) -> int:
+    """A finished call with an answer and a transcript segment, for reset/delete."""
+    call = start_call(conn, assignment_id, carrier_call_id="CA1")
+    record_answer(conn, assignment_id, "was_on_time", raw="yes", value=True, call_id=call.id)
+    add_transcript_segment(conn, call.id, TranscriptRole.AGENT, "Was it on time?")
+    finish_call(conn, call.id, Disposition.ANSWERED, EndReason.AGENT_COMPLETED)
+    return call.id
+
+
+def test_list_persons_is_oldest_first(conn):
+    first = get_or_create_person(conn, "+491700000001", default_region="DE")
+    second = get_or_create_person(conn, "+491700000002", default_region="DE")
+    assert [p.id for p in list_persons(conn)] == [first.id, second.id]
+
+
+def test_reset_clears_history_and_reopens_only_this_assignment(conn, example_config):
+    """Reset must empty exactly one assignment and leave a sibling untouched.
+
+    The tricky boundary: `answers.call_id` is SET NULL, not CASCADE, so deleting
+    the calls alone would orphan answers rather than remove them — reset deletes
+    answers explicitly first.
+    """
+    person = get_or_create_person(conn, E164, default_region="ES")
+    target = create_assignment(conn, person.id, "delivery_feedback")
+    other = create_assignment(conn, person.id, "onboarding")  # a second, untouched one
+    target_call = _seed_call_with_data(conn, target.id)
+    other_call = _seed_call_with_data(conn, other.id)
+
+    reset_assignment(conn, target.id)
+
+    # The target is emptied and reopened, its row (and id) intact.
+    assert get_assignment(conn, target.id).status is AssignmentStatus.PENDING
+    assert answers_for(conn, target.id) == []
+    assert calls_for(conn, target.id) == []
+    assert transcript_for(conn, target_call) == []
+    # The sibling assignment keeps everything.
+    assert len(answers_for(conn, other.id)) == 1
+    assert len(calls_for(conn, other.id)) == 1
+    assert len(transcript_for(conn, other_call)) == 1
+
+
+def test_delete_assignment_cascades_its_calls_and_answers(conn, example_config):
+    person = get_or_create_person(conn, E164, default_region="ES")
+    assignment = create_assignment(conn, person.id, "delivery_feedback")
+    call_id = _seed_call_with_data(conn, assignment.id)
+
+    delete_assignment(conn, assignment.id)
+
+    assert get_assignment(conn, assignment.id) is None
+    assert assignments_for_person(conn, person.id) == []
+    assert transcript_for(conn, call_id) == []  # cascaded via the deleted call
+    assert get_person(conn, person.id) is not None  # the person survives
+
+
+def test_delete_person_cascades_everything(conn, example_config):
+    person = get_or_create_person(conn, E164, default_region="ES")
+    assignment = create_assignment(conn, person.id, "delivery_feedback")
+    _seed_call_with_data(conn, assignment.id)
+
+    delete_person(conn, person.id)
+
+    assert get_person(conn, person.id) is None
+    assert get_assignment(conn, assignment.id) is None

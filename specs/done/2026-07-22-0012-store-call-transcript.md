@@ -111,7 +111,12 @@ Live smoke (on demand):
 - Not building any view or export of the transcript yet.
 
 ## Status
-Implemented (2026-07-22). Realises the storage half of ADR-011 (transcript from
-the Realtime API), which was configured but never persisted. The agent-side name
-and the whole flow are confirmed by the next live smoke, whose log is self-
-revealing on any mis-guessed event name.
+Implemented and **live-confirmed (2026-07-22, call 7)**. Realises the storage half
+of ADR-011 (transcript from the Realtime API), which was configured but never
+persisted. The live smoke stored both roles, so the guessed GA event names —
+`conversation.item.input_audio_transcription.completed` (respondent) and
+`response.output_audio_transcript.done` (agent) — are both **confirmed**; no
+unhandled `*transcript*` event was logged. The record also did its job: it showed
+a whisper mis-transcription of the respondent diverging from the correct `raw` the
+model recorded — the exact "raw is the model's claim" divergence it was built to
+surface (plan step 5).

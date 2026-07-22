@@ -28,6 +28,50 @@ path and what it costs in control — unverified as of 2026-07-18.
 once the vertical slice runs, not before — this is a simplification of code that
 does not exist yet.
 
+### O8 — Retry & policy model shape (step 7)
+**Question.** How the retry/policy layer is modelled. Sketched while scoping step
+7; none of the sub-forks is resolved — do not promote to an ADR until decided.
+**Forks.**
+- **Retry cadence shape.** `retry_delays_minutes: [0, 2, 60]` (an ordered list;
+  its length encodes the attempt cap; each delay measured from the previous
+  call's `ended_at`) · vs today's two scalars `max_attempts` + `retry_after_minutes`.
+  The list would supersede those ADR-007 policy fields.
+- **`unreachable` terminal status.** Add a terminal assignment status for "retries
+  exhausted, never completed" · vs leaving such assignments in `in_progress`
+  (today's step-6 behaviour) · vs reusing `partial`. Touches ADR-005's status
+  lifecycle.
+- **Redial trigger.** Broad — any non-`completed`, non-`opted_out` outcome
+  including a never-connected `in_progress` · vs strict — only a technical
+  `remote_ended` drop, with no-answer/busy handled separately.
+- **Refusal-reason probe.** A `probe_refusal_reason` flag that has the agent ask
+  once for the *reason* a question was declined — deliberately softening step-6's
+  "accept the refusal, don't press". The reason stays transcript-only until step
+  11 decides persistence. This re-opens an already-shipped behaviour, so it needs
+  an explicit decision, not a silent flag.
+- **Enforcement seam.** Retry logic in the runner (the assignment-selection gate)
+  · vs the refusal probe in the session instructions (ADR-002).
+**Needs first.** Step 7 to start. **Review the commented-out policies** —
+`call_window`, `max_call_seconds`, `silence_timeout` are stubbed in `policy.yaml`,
+shipped inert to prove the framework, and are not yet decided; settle them here
+when step 7 begins.
+
+### O9 — What drives the runner on a schedule?
+**Question.** Retry timing is decided from `now` (O8, spec `2026-07-22-0934`), but
+something must invoke `python -m src.runner` repeatedly for a due retry — or any
+pending assignment — to actually fire. What runs it?
+**Options.** Cron on the VPS · a systemd timer · a long-running loop inside the
+app container (sleep-poll) · an in-app scheduler (e.g. APScheduler) sharing the
+process.
+**Constraints.** Must not overlap runs — ADR-013 is one call at a time, so two
+runners racing would waste a slot or double-dial. The placement→`in_progress`
+transaction guards the DB, but the *scheduler* should still serialise. Deploy is
+Docker Compose behind Traefik on the VPS (ADR-017), shared with other projects.
+The runner is single-shot today (`main()` places at most one call and exits).
+**Notes.** Cadence is bounded below by the shortest retry delay (`0` = "next
+tick"), so the poll interval sets how "immediate" the instant retry really is. Not
+urgent for the offline skeleton — the decision functions are correct given `now`
+and tests inject it — but required before retries fire on the live line.
+
 ## Roadmap
 
 > Not decisions — the agreed order of work. Each step ends in something that
@@ -92,31 +136,44 @@ does not exist yet.
      call, `end_call` closed the sockets immediately while Twilio still had the
      goodbye buffered, so the closing words were cut. Fixed by draining Twilio
      playback (an end-of-call `mark` + grace) before closing — spec
-     `2026-07-22-0844`.
+     `2026-07-22-0844`; live-confirmed on call 7 (the closing words played in full).
    The transcript-storage spec is the debugging instrument for this step.
 6. **Full questionnaire.** _(done 2026-07-22, spec `2026-07-22-0755` in
-   `specs/done/` — offline-verified; live smoke still owed.)_ The model is handed
-   the whole ordered question list in its session instructions and drives the
-   conversation itself (ADR-002): it asks each in turn, records every answer, and
-   says goodbye before `end_call`. `record_answer` feeds back which required
-   questions remain, so the set is reliably closed. Completion is computed over the
-   full required set (`completion_status`), unchanged. Also landed the carried
-   double-call fix: `place_call_for_assignment` now moves the assignment
+   `specs/done/` — live-verified on call 7: both questions recorded, assignment
+   `completed`, goodbye intact.)_ The model is handed the whole ordered question
+   list in its session instructions and drives the conversation itself (ADR-002):
+   it asks each in turn, records every answer, and thanks the person and says
+   goodbye before `end_call`. A refusal is accepted graciously — move on, do not
+   press, do not record a skipped question; `record_answer` returns a refusal-safe
+   reminder to cover any remaining questions (not an enumeration of what is missing,
+   which would push re-asking a declined one — see step 11). Completion is computed
+   over the full required set (`completion_status`), unchanged. Also landed the
+   carried double-call fix: `place_call_for_assignment` now moves the assignment
    `pending → in_progress` at placement (same transaction as the Call row), so a
    second runner run skips an in-flight call. **New behaviour to recover later:** a
    call that never connects now stays `in_progress` instead of being accidentally
    re-dialled — deliberate retry/unreachable handling is step 7.
 7. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
+   First slice specced (`2026-07-22-0934`): a policy-enforcement skeleton
+   (`src/policy.py`) with retry-on-disconnect and refusal-reason; the rest parked.
+   Retries only *fire* once something runs the runner on a schedule — see O9.
 8. **Multilingual.** English and Russian per `Person.language`.
-9. **UI.** Only once the above works (ADR-006: UI last, on top of a system that
-   already runs). Concrete surfaces:
-   - **Add a person and an assignment** — replacing today's ad-hoc DB seeding (a
-     hand-run Python snippet against the prod DB) with a form.
-   - **View answers** — per person/assignment: the recorded `raw`/`value` and the
-     computed completion status.
-   - **Read the transcript** — the stored call transcript, for comparing what was
-     actually said against what was recorded. Depends on step 5's transcript
-     storage (spec `2026-07-22-0012`).
+9. **UI.** _(done 2026-07-22, spec `2026-07-22-0923` in `specs/active/`, ADR-023.)_
+   A minimal token-gated `/ui` admin surface in the same ASGI app, server-rendered
+   (Jinja, no JS build). Built ahead of steps 7–8 because ADR-006's precondition —
+   a system that already runs — is met (call 7). Surfaces delivered:
+   - **Add a person and an assignment** — a form, replacing the hand-run Python
+     snippet against the prod DB. Plus delete and **reset** (wipe an assignment's
+     history back to `pending`) for re-running a demo.
+   - **Launch a call** — a "Call next" button reusing the runner's next-pending pick
+     (`place_next_call`), no per-person on-demand dial.
+   - **View answers** — per assignment: `raw`/`value` and the computed completion.
+   - **Read the transcript** — the stored `transcript_segments` per call (ADR-022),
+     for comparing what was said against what was recorded.
+   Verified in CI (`tests/test_ui.py`, gate + wiring; `tests/test_storage.py`, the
+   reset/delete boundary). Live smoke still owed on the deployed instance. `UI_TOKEN`
+   is read from the environment for now; it moves into the typed settings object when
+   spec `2026-07-21-1448` lands.
 10. **Edge-case testing.** Deliberately exercise the messy real-line conditions a
     happy-path smoke never hits, and make the stack behave under each:
     - **Background noise** — a TV or a room of people: server VAD treats it as

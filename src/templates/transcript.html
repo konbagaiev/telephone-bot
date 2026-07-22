@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Transcript — call #{{ call_id }}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 50rem; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    .seg { margin: .5rem 0; }
+    .role { font-variant: small-caps; font-weight: 600; margin-right: .5rem; }
+    .agent { color: #1a5fb4; }
+    .respondent { color: #26734d; }
+    .muted { color: #777; }
+    time { color: #999; font-size: .85em; margin-left: .5rem; }
+  </style>
+</head>
+<body>
+  <p><a href="javascript:history.back()">← back</a></p>
+  <h1>Transcript — call #{{ call_id }}</h1>
+  <p class="muted">What was actually said (ADR-011), in stored order — compare against the recorded answers.</p>
+  {% if not segments %}<p class="muted">No transcript for this call.</p>{% endif %}
+  {% for s in segments %}
+  <div class="seg">
+    <span class="role {{ s.role.value }}">{{ s.role.value }}</span>{{ s.text }}<time>{{ s.recorded_at }}</time>
+  </div>
+  {% endfor %}
+</body>
+</html>

@@ -21,6 +21,14 @@ including live, with AI assistance.
   minutes). A timestamp needs no "next number" lookup, so specs can be created
   on the fly without collisions.
 - **ADRs are append-only** — never edit an accepted decision; supersede it.
+- **A resolved fork is not done until it's an ADR.** Whenever we pick one viable
+  option over another — or deliberately reject one — record it in
+  `docs/decisions.md` as part of the same change, not only in a commit message,
+  spec, or chat. Reasoning left in a commit or a session is reasoning the next
+  reader can't find. The bar is a *genuine fork*: a mechanical choice with no
+  viable alternative stays out; a design or architecture decision earns an ADR
+  (route it through `docs/plan.md` first if it needs discussion — see
+  **Decisions**).
 - **Never `git commit` or `git push` without the user's explicit request or
   consent.** Do the work, run the tests, show what changed — then stop and let the
   user decide when it lands. This includes not amending or pushing existing

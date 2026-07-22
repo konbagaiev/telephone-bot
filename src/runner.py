@@ -65,7 +65,24 @@ def place_call_for_assignment(
     return call
 
 
-def _carrier_from_env() -> TwilioCarrier:
+def place_next_call(
+    conn, config: Config, carrier: Carrier, public_base_url: str
+) -> Call | None:
+    """Place a call for the oldest pending assignment, or return None if none wait.
+
+    The one entry point shared by the CLI (`main`) and the admin UI's "Call next"
+    button: validate the config references up front, take the next pending
+    assignment (ADR-013), and dial it. Returns the Call, or None when nothing is
+    pending — the caller decides how to report that.
+    """
+    db.validate_references(conn, config)
+    assignment = db.next_pending_assignment(conn)
+    if assignment is None:
+        return None
+    return place_call_for_assignment(conn, config, carrier, assignment.id, public_base_url)
+
+
+def carrier_from_env() -> TwilioCarrier:
     return TwilioCarrier(
         account_sid=os.environ["TWILIO_ACCOUNT_SID"],
         auth_token=os.environ["TWILIO_AUTH_TOKEN"],
@@ -77,19 +94,15 @@ def main() -> None:
     load_local_env()
     config = load_config(_config_dir())  # per-run read (config-per-call)
     public_base_url = os.environ["PUBLIC_BASE_URL"]
-    carrier = _carrier_from_env()
+    carrier = carrier_from_env()
 
     engine = db.create_db_engine()
     with engine.begin() as conn:
-        db.validate_references(conn, config)
-        assignment = db.next_pending_assignment(conn)
-        if assignment is None:
+        call = place_next_call(conn, config, carrier, public_base_url)
+        if call is None:
             print("no pending assignments")
             return
-        call = place_call_for_assignment(
-            conn, config, carrier, assignment.id, public_base_url
-        )
-        print(f"placed call {call.id} for assignment {assignment.id} -> {call.carrier_call_id}")
+        print(f"placed call {call.id} for assignment {call.assignment_id} -> {call.carrier_call_id}")
 
 
 if __name__ == "__main__":

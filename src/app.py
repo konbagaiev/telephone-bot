@@ -15,17 +15,32 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from pathlib import Path
 
 import websockets
-from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import RedirectResponse
+from fastapi.templating import Jinja2Templates
 from websockets.exceptions import ConnectionClosed
 
 from src import bridge, db
 from src.agent.session import session_update
 from src.agent.tools import CallSession, finalize, handle_tool_call
 from src.config import load_config
-from src.models import EndReason, TranscriptRole
+from src.models import EndReason, PhoneNumberError, TranscriptRole, completion_status
+from src.runner import carrier_from_env, place_next_call
+from src.telephony import Carrier
 from src.telephony.twilio import stream_twiml, validate_signature
 
 app = FastAPI()
@@ -237,3 +252,163 @@ async def stream(ws: WebSocket) -> None:
         with engine.begin() as conn:
             session = CallSession(conn, config, questionnaire, assignment.id, call_id)
             finalize(session, end_reason)
+
+
+# --- Admin UI (roadmap step 9) --------------------------------------------
+#
+# A minimal server-rendered surface to manage the operational data and launch a
+# call, replacing hand-run DB seeding and `python -m src.runner` (ADR-023). It is
+# gated by a single shared token, checked as a dependency on this router only —
+# the Twilio webhooks above stay ungated because they self-authenticate by
+# signature, and putting the token on them would reject every real call.
+
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+_UI_TOKEN_COOKIE = "ui_token"
+
+
+def require_ui_token(request: Request) -> None:
+    """Gate the admin UI on a shared token supplied in the URL (ADR-023).
+
+    Accepted from the `token` query parameter or, once seen, a cookie set from it —
+    so only the first visit needs `?token=…` and navigation carries it forward.
+    Constant-time compared so the check does not leak the token by timing.
+    """
+    expected = os.environ["UI_TOKEN"]
+    supplied = request.query_params.get("token") or request.cookies.get(_UI_TOKEN_COOKIE)
+    if not supplied or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="missing or invalid UI token")
+
+
+def get_db_conn():
+    """A committed-on-success connection for one UI request. Overridden in tests to
+    yield the rolled-back test connection, so UI handlers are checked without a
+    real engine (the runner/tool pattern: inject the connection seam)."""
+    engine = db.create_db_engine()
+    with engine.begin() as conn:
+        yield conn
+
+
+def carrier_dependency() -> Carrier:
+    """The carrier for 'Call next'. Overridden in tests with a fake (no network)."""
+    return carrier_from_env()
+
+
+ui = APIRouter(prefix="/ui", dependencies=[Depends(require_ui_token)])
+
+
+def _render(request: Request, name: str, context: dict, status_code: int = 200) -> Response:
+    response = templates.TemplateResponse(
+        request=request, name=name, context=context, status_code=status_code
+    )
+    # Persist a query-supplied token as a cookie so later navigation needs no ?token=.
+    token = request.query_params.get("token")
+    if token:
+        response.set_cookie(_UI_TOKEN_COOKIE, token, httponly=True, samesite="lax")
+    return response
+
+
+def _index_context(conn, error: str | None = None) -> dict:
+    config = load_config(_config_dir())
+    people = [
+        {"person": person, "assignments": db.assignments_for_person(conn, person.id)}
+        for person in db.list_persons(conn)
+    ]
+    return {"people": people, "questionnaire_ids": sorted(config.questionnaires), "error": error}
+
+
+@ui.get("")
+def ui_index(request: Request, conn=Depends(get_db_conn)) -> Response:
+    return _render(request, "index.html", _index_context(conn))
+
+
+@ui.post("/people")
+def ui_add_person(
+    request: Request,
+    phone: str = Form(...),
+    name: str = Form(""),
+    language: str = Form("en"),
+    region: str = Form("DE"),
+    questionnaire_id: str = Form(""),
+    conn=Depends(get_db_conn),
+) -> Response:
+    try:
+        person = db.get_or_create_person(
+            conn, phone, default_region=region, name=name or None, language=language
+        )
+    except PhoneNumberError as exc:
+        # Re-render the roster with the problem shown, rather than a bare 500.
+        return _render(request, "index.html", _index_context(conn, error=str(exc)), status_code=400)
+    if questionnaire_id:
+        db.create_assignment(conn, person.id, questionnaire_id)
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.post("/assignments")
+def ui_add_assignment(
+    person_id: int = Form(...),
+    questionnaire_id: str = Form(...),
+    conn=Depends(get_db_conn),
+) -> Response:
+    db.create_assignment(conn, person_id, questionnaire_id)
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.post("/people/{person_id}/delete")
+def ui_delete_person(person_id: int, conn=Depends(get_db_conn)) -> Response:
+    db.delete_person(conn, person_id)
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.post("/assignments/{assignment_id}/delete")
+def ui_delete_assignment(assignment_id: int, conn=Depends(get_db_conn)) -> Response:
+    db.delete_assignment(conn, assignment_id)
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.post("/assignments/{assignment_id}/reset")
+def ui_reset_assignment(assignment_id: int, conn=Depends(get_db_conn)) -> Response:
+    db.reset_assignment(conn, assignment_id)
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.post("/call-next")
+def ui_call_next(
+    conn=Depends(get_db_conn), carrier: Carrier = Depends(carrier_dependency)
+) -> Response:
+    config = load_config(_config_dir())
+    place_next_call(conn, config, carrier, _public_base_url())
+    return RedirectResponse("/ui", status_code=303)
+
+
+@ui.get("/assignments/{assignment_id}")
+def ui_assignment(request: Request, assignment_id: int, conn=Depends(get_db_conn)) -> Response:
+    assignment = db.get_assignment(conn, assignment_id)
+    if assignment is None:
+        raise HTTPException(status_code=404, detail="no such assignment")
+    config = load_config(_config_dir())
+    questionnaire = config.questionnaire(assignment.questionnaire_id)
+    status = completion_status(questionnaire, db.answered_question_ids(conn, assignment_id))
+    return _render(
+        request,
+        "assignment.html",
+        {
+            "assignment": assignment,
+            "person": db.get_person(conn, assignment.person_id),
+            "answers": db.answers_for(conn, assignment_id),
+            "completion": status.value,
+            "calls": db.calls_for(conn, assignment_id),
+        },
+    )
+
+
+@ui.get("/calls/{call_id}/transcript")
+def ui_transcript(request: Request, call_id: int, conn=Depends(get_db_conn)) -> Response:
+    return _render(
+        request,
+        "transcript.html",
+        {"call_id": call_id, "segments": db.transcript_for(conn, call_id)},
+    )
+
+
+app.include_router(ui)

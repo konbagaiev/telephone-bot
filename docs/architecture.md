@@ -5,14 +5,17 @@
 > line-level detail — the code is the source of truth for details.
 
 **Status: data layer + deploy skeleton + a call that asks the whole
-questionnaire.** The questionnaire, the people, and the results exist; a FastAPI
+questionnaire + a token-gated admin UI.** The questionnaire, the people, and the
+results exist; a FastAPI
 service is deployed to the VPS behind Traefik by a GitHub Actions pipeline; and
 the whole call path is wired — a runner places an outbound call (and marks the
 assignment in-flight), the `/voice` webhook returns TwiML that streams the audio
 to `/stream`, and the bridge relays it to an OpenAI Realtime session that asks
-every question in order and writes each `record_answer` to Postgres. The live
+every question in order and writes each `record_answer` to Postgres. A minimal
+`/ui` admin surface (ADR-023) now manages people/assignments, launches the next
+pending call, and shows the answers and stored transcript. The live
 call itself is verified by a manual smoke, not in CI: Realtime behaves differently
-on a phone line than in any offline harness (roadmap step 4). Policy enforcement
+on a phone line than in any offline harness. Policy enforcement
 and multilingual operation are step 7 and beyond; the messy real-line conditions
 (background noise, drops) are deferred to the edge-case step (`docs/plan.md`).
 
@@ -40,8 +43,9 @@ publish.
 | `src/telephony/` | The carrier boundary (ADR-004): `Carrier` Protocol in `__init__`, Twilio adapter in `twilio.py` (REST dial, signature validation, TwiML). No Twilio type leaks past it |
 | `src/agent/` | `session.py` — Realtime `session.update` and the tool definitions; `tools.py` — turning a tool call into a write (the primary test surface). The model owns speech, this owns facts (ADR-002) |
 | `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear`; an end-of-call `mark` so an agent-ended call drains Twilio playback before closing; dispatches tool calls and transcription events (ADR-011) out to callbacks |
-| `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run |
-| `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge) |
+| `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run. `place_next_call` is the shared entry the CLI and the UI's "Call next" both use |
+| `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge), and the token-gated `/ui` admin router (ADR-023) |
+| `src/templates/` | Jinja templates for the admin UI: `index.html`, `assignment.html`, `transcript.html`. Self-contained, no external assets (ADR-023) |
 | `migrations/` | Alembic; `0001_initial` creates the four tables, `0002` adds `transcript_segments` |
 | `Dockerfile`, `docker-compose.yml` | The app image and its service, behind Traefik on `phone-bot.bagaiev.com`, using the shared Postgres (ADR-017) |
 | `.github/workflows/deploy.yml` | On push to `main`: test → pull → migrate → recreate container → health check |
@@ -62,6 +66,13 @@ pure function of the questionnaire and the answers on record. The model calling
 unique constraint behind it.
 
 **Three independent status fields**, not one — see ADR-005. Do not collapse them.
+
+**The admin UI is gated; the webhooks are not.** The `/ui` router carries a
+single-token dependency (`UI_TOKEN`, in the URL then a cookie, ADR-023). `/voice`,
+`/stream`, and `/health` must stay off that gate — Twilio authenticates by
+signature (ADR-004), and a token on `/voice` would reject every real call. Add new
+operator surfaces under the `/ui` router so they inherit the gate; add new
+carrier-facing endpoints outside it.
 
 **Configuration references are validated up front.** `validate_references()`
 catches an assignment pointing at a questionnaire id that no longer exists in
@@ -159,7 +170,10 @@ back, so tests cannot see each other.
 | What the agent is told / may do | `instructions_for()` and the tool defs in `src/agent/session.py` |
 | How a tool call becomes data | `src/agent/tools.py` (`handle_tool_call`, `finalize`) |
 | The carrier (add a provider) | a new class satisfying `Carrier` in `src/telephony/`; nothing else changes |
+| The admin UI (pages, forms) | the `/ui` router in `src/app.py` and the templates in `src/templates/` (ADR-023) |
 
-**Last verified against commit:** the teardown-finalise fix (roadmap step 4). The
-vertical slice's live smoke passed on 2026-07-21 — a real call recorded an answer
-and finalised to `completed`, over the GA Realtime API.
+**Last verified against commit:** the full-questionnaire slice (roadmap step 6),
+readability follow-ups included. Live smoke on 2026-07-22 (call 7): a real call
+asked both questions in order, recorded both answers, moved the assignment
+`in_progress → completed`, stored the transcript for both roles, and let the agent
+finish its goodbye before hanging up — over the GA Realtime API.

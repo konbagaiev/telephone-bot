@@ -576,3 +576,175 @@ the system ever to go real, the Spanish number and its bundle return as a
 precondition, along with ADR-010's caller-ID reasoning.
 
 **Status:** Accepted
+
+---
+
+## ADR-019 — Reuse the VPS's shared Postgres instance, one database per project
+
+**Context.** ADR-016 chose Postgres for operational data but left the database
+*topology* open: a dedicated instance for this service, or a shared one. The VPS
+(ADR-015) already runs a `shared_postgres` (postgres:16) container fronting its
+other projects on an internal `backend` network, following a "one database per
+project" convention.
+
+**Decision.** Do not stand up a dedicated Postgres. Reuse the existing
+`shared_postgres` instance; create a dedicated role and database `vividi` inside
+it, reached over the internal Docker `backend` network (`shared_postgres:5432`).
+Local development mirrors the shape with a local `vividi` database and role.
+
+**Consequences.** No second Postgres to run, back up, or patch on the VPS — the
+real cost of ADR-016 stays "a connection string", as claimed. The `vividi`
+database isolates this project's schema and data (migrations, ADR-016, apply to
+it alone).
+
+The accepted cost is a **shared failure domain**, the same class of caveat
+ADR-015 already named for the shared VPS: another project's load, or a bad
+restart of `shared_postgres`, surfaces here. At demo scale — one call at a time
+(ADR-013), interview-only (ADR-018) — that is acceptable. A real deployment
+revisits instance isolation; it is a connection-string change behind ADR-016's
+repository boundary, not a rewrite.
+
+**Status:** Accepted
+
+---
+
+## ADR-020 — The deploy is the full CI pipeline, not a bare `git pull`
+
+**Context.** ADR-015 and ADR-017 put the app on the VPS deployed from GitHub
+Actions and named the pipeline's steps. But the cheapest possible deploy was on
+the table first: a bare `git pull` on the server after each push to `main` — no
+test gate, no migrations, no restart. The fork is how much pipeline an
+interview-scale prototype actually warrants. This ADR records that choice; ADR-017
+describes the resulting pipeline and is not restated here.
+
+**Decision.** The full pipeline over the bare `git pull`: CI runs the whole test
+suite as a **gate**, then `git pull`, `alembic upgrade head` (ADR-016), recreate
+the container (ADR-017), health-check. A red test blocks the deploy.
+
+**Consequences.** The test gate extends AGENTS.md's guardrail — a change is only
+safe because the suite catches a break in seconds — to the deploy boundary, and
+the suite is fast enough (sub-second) that the gate is nearly free. Migrations in
+the deploy path mean a schema change can now break a deploy, already accepted
+under ADR-016.
+
+Why not the cheap deploy: this is a deliverable someone will ask to **change
+live** — the whole reason the repo exists (AGENTS.md). A deploy that silently
+ships an untested change, or skips a migration and runs code against an old
+schema, turns that live-edit loop from an asset into a hazard. The pipeline is
+load-bearing to the demo, not gold-plating. Drain-aware restart remains deferred
+per ADR-017; until then ADR-013 (one call at a time) makes a timed restart
+between calls sufficient.
+
+**Status:** Accepted
+
+---
+
+## ADR-021 — Server VAD owns turn detection; the bridge does not listen
+
+**Context.** Turn-taking and barge-in detection can be done two ways: let the
+OpenAI Realtime **server VAD** own it — we stream audio continuously and the model
+emits `speech_started` / `speech_stopped` and manages turns — or detect voice
+activity in our own bridge and tell the model when a turn ends.
+
+**Decision.** Server VAD. The bridge relays audio frames (ADR-003) and does not
+detect speech.
+
+**Consequences.** This follows directly from ADR-002 (the model owns speech,
+wording, turn-taking, and barge-in): re-deriving turn boundaries in the bridge
+would duplicate, and fight, what the model already does. It also keeps the
+latency-critical bridge minimal — no analysis in the hot path.
+
+The accepted cost is that we inherit server VAD's behaviour on a real line —
+notably that it treats *any* audio as speech, so background noise floods the
+model with phantom input (the step-5 live finding in `docs/plan.md`, where a TV
+in the room degraded or ended a call). The remedy stays on the model's side of
+the ADR-002 boundary — VAD threshold tuning, input noise reduction, or semantic
+VAD, all policy/parameter changes (ADR-007) — not a return to bridge-side
+detection.
+
+**Status:** Accepted
+
+---
+
+## ADR-022 — The transcript is persisted in a dedicated table, written best-effort off the call path
+
+**Context.** ADR-011 sources the transcript from the Realtime API's transcription
+events, and ADR-014 makes it the only retained record (no audio). *How* to persist
+it was still open. The step-4 live smoke forced the question: `raw` turned out to
+be the model's *claim*, filled in `record_answer`, not the utterance — under noise
+the model recorded an answer no one gave. A faithful transcript became the
+debugging instrument (`docs/plan.md` step 5). Three storage shapes were weighed: a
+dedicated table, a JSONB/text column appended on `calls`, or logging events to
+container stdout and promoting to storage later.
+
+**Decision.** A dedicated `transcript_segments` table (`call_id`, `role`, `text`,
+`recorded_at`, with a `transcript_role` enum), migration 0002. The bridge stays
+model-free: it exposes an `on_transcript(role, text)` seam mirroring
+`on_tool_call`, emitting `role` as a bare string; `app.py` maps it to the enum.
+Each segment is written in its own short transaction, and write errors are
+swallowed so a debug write can never break a live call.
+
+**Consequences.** The transcript is queryable per call and per role — required by
+the step-9 UI ("read the transcript") and for comparing what was said against what
+was recorded, which is the reason it exists. The dedicated table was judged
+over-weight *as a step-5 debug tool alone*, and is justified specifically by that
+near-term UI dependency; a JSONB column would have blocked per-segment querying,
+and stdout logging loses the record on every redeploy (ADR-017). The
+`role`-as-string seam keeps the bridge (ADR-003) free of model and DB imports, the
+same "dumb bridge" layering the media path depends on. Writes are best-effort and
+isolated, so persistence can never affect call handling.
+
+`raw` / `record_answer` semantics are untouched: this is a parallel debug record.
+Repointing `raw` at the transcript is a separate, later decision (`docs/plan.md`
+step 5).
+
+**Status:** Accepted
+
+---
+
+## ADR-023 — Admin UI: server-rendered, in the same app, token-gated
+
+**Context.** Roadmap step 9. The full call path now runs (ADR-002/003/011,
+live-verified on call 7), so ADR-006's "UI last, on top of a system that already
+runs" is satisfied. Two operations were still hand-run against production: seeding
+people/assignments with an ad-hoc Python snippet, and dialing with
+`python -m src.runner`. The UI replaces both and adds read surfaces (answers, the
+stored transcript — the reason ADR-022 made the transcript queryable). Several
+forks had to be settled together: where the UI lives, how it renders, how it is
+gated, and how it launches a call.
+
+**Decision.**
+- **Same ASGI app**, not a separate service: the UI routes are an `APIRouter`
+  included into `src/app.py`, reusing the existing config, DB, and carrier wiring.
+- **Server-rendered Jinja**, no JS build step, no HTMX, no CSS framework —
+  full-reload forms and three self-contained templates. The repo is Python-only
+  (ADR-001); a frontend toolchain is not worth it for a demo admin surface.
+- **Launch = next-pending**, reusing the runner. `place_next_call` is extracted
+  from `runner.main()` and called by both the CLI and the UI's "Call next" button;
+  there is no per-person on-demand dial. A reset makes a specific person pending,
+  and next-pending then picks them — enough for a single-line demo (ADR-013).
+- **DB ops = create + view + delete/reset**, no editing of existing rows. Reset
+  wipes an assignment's answers and calls (transcript cascades) and sets it back to
+  `pending` in place, so the same row is re-dialled (mirrors the reset_and_call
+  skill).
+- **Access = one shared token in the URL**, checked by a dependency on the UI
+  router only, supplied once as `?token=…` then carried in a cookie, constant-time
+  compared. The token is read from the environment (`UI_TOKEN`, ADR-015); it will
+  move to the typed settings object when the settings-centralisation spec lands.
+
+**Consequences.** The gate is deliberately scoped to `/ui`: the Twilio webhooks
+(`/voice`, `/stream`) and `/health` stay ungated because they self-authenticate by
+signature (ADR-004/015) — putting the token on them would reject every real call,
+so a test asserts `/voice` still answers 403-by-signature (not the UI's 401) while
+`/ui` 401s without the token. A token in the URL leaks into browser history and
+server logs; accepted for an interview-scale, single-operator demo (ADR-018), not
+a real multi-user deployment, which would revisit this with sessions/accounts.
+Launching from a web request reuses `place_call_for_assignment`'s
+`pending → in_progress` transition (ADR, roadmap step 6), so a double-click finds
+nothing pending and cannot double-dial. The carrier and the DB connection are
+injected as overridable dependencies, so the UI handlers are tested with a fake
+carrier and the rolled-back test connection — no network, consistent with the
+runner and tool tests. The bridge, agent, tools, and telephony boundary are
+untouched: the UI only *initiates* a call and *reads* its results.
+
+**Status:** Accepted

@@ -189,6 +189,28 @@ def get_person(conn: Connection, person_id: int) -> Person | None:
     )
 
 
+def _person_from_row(row) -> Person:
+    return Person(
+        id=row.id,
+        phone=row.phone,
+        name=row.name,
+        language=row.language,
+        attributes=row.attributes,
+    )
+
+
+def list_persons(conn: Connection) -> list[Person]:
+    """Everyone on record, oldest first — the admin UI's roster (roadmap step 9)."""
+    rows = conn.execute(select(persons).order_by(persons.c.id)).all()
+    return [_person_from_row(r) for r in rows]
+
+
+def delete_person(conn: Connection, person_id: int) -> None:
+    """Remove a person and, by cascade, their assignments, calls, answers, and
+    transcript. The UI uses this to tidy up demo data, not for retention policy."""
+    conn.execute(persons.delete().where(persons.c.id == person_id))
+
+
 # --- assignments ----------------------------------------------------------
 
 
@@ -220,6 +242,42 @@ def create_assignment(conn: Connection, person_id: int, questionnaire_id: str) -
         )
 
     return Assignment(id=row_id, person_id=person_id, questionnaire_id=questionnaire_id)
+
+
+def _assignment_from_row(row) -> Assignment:
+    return Assignment(
+        id=row.id,
+        person_id=row.person_id,
+        questionnaire_id=row.questionnaire_id,
+        status=AssignmentStatus(row.status),
+    )
+
+
+def assignments_for_person(conn: Connection, person_id: int) -> list[Assignment]:
+    """A person's assignments, oldest first (roadmap step 9)."""
+    rows = conn.execute(
+        select(assignments).where(assignments.c.person_id == person_id).order_by(assignments.c.id)
+    ).all()
+    return [_assignment_from_row(r) for r in rows]
+
+
+def delete_assignment(conn: Connection, assignment_id: int) -> None:
+    """Remove an assignment and, by cascade, its calls, answers, and transcript."""
+    conn.execute(assignments.delete().where(assignments.c.id == assignment_id))
+
+
+def reset_assignment(conn: Connection, assignment_id: int) -> None:
+    """Wipe an assignment's history and set it back to `pending` for a re-run.
+
+    Answers are deleted explicitly first: `answers.call_id` is `SET NULL`, not
+    `CASCADE`, so deleting the calls alone would orphan the answers rather than
+    remove them. Deleting the calls then cascades their transcript segments. The
+    assignment row itself (and its id) survives, so `next_pending_assignment` will
+    pick it up again — this is the re-demo path (mirrors the reset_and_call skill).
+    """
+    conn.execute(answers.delete().where(answers.c.assignment_id == assignment_id))
+    conn.execute(calls.delete().where(calls.c.assignment_id == assignment_id))
+    set_assignment_status(conn, assignment_id, AssignmentStatus.PENDING)
 
 
 def get_assignment(conn: Connection, assignment_id: int) -> Assignment | None:
@@ -296,6 +354,25 @@ def start_call(conn: Connection, assignment_id: int, carrier_call_id: str | None
         .returning(calls.c.id)
     ).scalar_one()
     return Call(id=row_id, assignment_id=assignment_id, started_at=started_at)
+
+
+def calls_for(conn: Connection, assignment_id: int) -> list[Call]:
+    """An assignment's calls, oldest first — each links to a stored transcript."""
+    rows = conn.execute(
+        select(calls).where(calls.c.assignment_id == assignment_id).order_by(calls.c.id)
+    ).all()
+    return [
+        Call(
+            id=r.id,
+            assignment_id=r.assignment_id,
+            started_at=r.started_at,
+            ended_at=r.ended_at,
+            disposition=Disposition(r.disposition) if r.disposition else None,
+            end_reason=EndReason(r.end_reason) if r.end_reason else None,
+            carrier_call_id=r.carrier_call_id,
+        )
+        for r in rows
+    ]
 
 
 def set_carrier_call_id(conn: Connection, call_id: int, carrier_call_id: str) -> None:

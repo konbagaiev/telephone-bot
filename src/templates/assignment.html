@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assignment #{{ assignment.id }} — admin</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+    th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #eee; }
+    .status { font-variant: small-caps; font-weight: 600; }
+    .muted { color: #777; }
+    code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <p><a href="/ui">← back</a></p>
+  <h1>{{ assignment.questionnaire_id }}</h1>
+  <p>
+    {{ person.name or "—" }} · <span class="muted">{{ person.phone }}</span><br>
+    Completion (computed): <span class="status">{{ completion }}</span> ·
+    stored status: <span class="status">{{ assignment.status.value }}</span>
+  </p>
+
+  <h2>Answers</h2>
+  {% if not answers %}<p class="muted">No answers recorded.</p>{% endif %}
+  <table>
+    {% for a in answers %}
+    <tr>
+      <td><strong>{{ a.question_id }}</strong></td>
+      <td>{{ a.raw }}</td>
+      <td><code>{{ a.value }}</code></td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Calls</h2>
+  {% if not calls %}<p class="muted">No calls yet.</p>{% endif %}
+  <ul>
+    {% for c in calls %}
+    <li>
+      Call #{{ c.id }}
+      <span class="muted">{{ c.started_at }}{% if c.end_reason %} · {{ c.end_reason.value }}{% endif %}</span>
+      — <a href="/ui/calls/{{ c.id }}/transcript">transcript</a>
+    </li>
+    {% endfor %}
+  </ul>
+</body>
+</html>
