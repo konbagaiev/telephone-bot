@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Enum as SAEnum,
@@ -21,12 +22,13 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     select,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy import create_engine
 
-from src.config import Config
+from src.config import Config, Policy
 from src.models import (
     Answer,
     Assignment,
@@ -106,6 +108,11 @@ answers = Table(
     # compared; without the raw form a wrong normalisation cannot be diagnosed.
     Column("raw", Text, nullable=False),
     Column("value", JSONB),
+    # A declined question (plan step 11): `declined` excludes it from the answered
+    # set (see answered_question_ids), `refusal_reason` keeps why if the respondent
+    # said. server_default false so every prior answer stays a real answer.
+    Column("declined", Boolean, nullable=False, server_default=text("false")),
+    Column("refusal_reason", Text),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("assignment_id", "question_id", name="uq_answer_assignment_question"),
 )
@@ -272,7 +279,7 @@ def reset_assignment(conn: Connection, assignment_id: int) -> None:
     Answers are deleted explicitly first: `answers.call_id` is `SET NULL`, not
     `CASCADE`, so deleting the calls alone would orphan the answers rather than
     remove them. Deleting the calls then cascades their transcript segments. The
-    assignment row itself (and its id) survives, so `next_pending_assignment` will
+    assignment row itself (and its id) survives, so `select_next_to_call` will
     pick it up again — this is the re-demo path (mirrors the reset_and_call skill).
     """
     conn.execute(answers.delete().where(answers.c.assignment_id == assignment_id))
@@ -300,26 +307,46 @@ def set_assignment_status(conn: Connection, assignment_id: int, status: Assignme
     )
 
 
-def next_pending_assignment(conn: Connection) -> Assignment | None:
-    """The oldest assignment still waiting to be called, or None.
+def select_next_to_call(
+    conn: Connection, config: Config, policy: Policy, now: datetime
+) -> Assignment | None:
+    """The next assignment to dial under the retry policy, or None.
 
-    One call at a time (ADR-013): the runner takes a single pending assignment
-    rather than draining a queue. Ordered by id so the choice is deterministic.
+    One call at a time (ADR-013): scan candidates oldest-first and return the first
+    that should be dialled now — a never-tried `pending` one, or one whose last call
+    is due for a retry (`policy.retry_decision`). Assignments whose retries are
+    exhausted, or whose call the agent wound up itself (`STOP`), are labelled
+    terminal (`unreachable`/`partial`) as we pass them, so they leave the pool and
+    are visible in the UI. `completed`/`opted_out` are terminal already and skipped.
+
+    This is where policy meets the operational data: the decision is pure
+    (`src/policy.py`), the writes are here.
     """
-    row = conn.execute(
+    from src import policy as policy_rules  # local import avoids an import cycle
+
+    rows = conn.execute(
         select(assignments)
-        .where(assignments.c.status == AssignmentStatus.PENDING)
+        .where(
+            assignments.c.status.notin_(
+                [AssignmentStatus.COMPLETED, AssignmentStatus.OPTED_OUT]
+            )
+        )
         .order_by(assignments.c.id)
-        .limit(1)
-    ).one_or_none()
-    if row is None:
-        return None
-    return Assignment(
-        id=row.id,
-        person_id=row.person_id,
-        questionnaire_id=row.questionnaire_id,
-        status=AssignmentStatus(row.status),
-    )
+    ).all()
+
+    for row in rows:
+        assignment = _assignment_from_row(row)
+        if assignment.status is AssignmentStatus.PENDING:
+            return assignment  # never tried — dial it
+        decision = policy_rules.retry_decision(policy, calls_for(conn, assignment.id), now)
+        if decision is policy_rules.RetryDecision.DIAL_NOW:
+            return assignment
+        if decision in (policy_rules.RetryDecision.EXHAUSTED, policy_rules.RetryDecision.STOP):
+            set_assignment_status(
+                conn, assignment.id, policy_rules.terminal_status(calls_for(conn, assignment.id))
+            )
+        # WAIT: an attempt is in flight, or the retry is not yet due — skip.
+    return None
 
 
 def validate_references(conn: Connection, config: Config) -> None:
@@ -399,6 +426,25 @@ def finish_call(
     )
 
 
+def record_pre_answer_outcome(
+    conn: Connection, call_id: int, disposition: Disposition
+) -> bool:
+    """Record a never-answered outcome (no-answer/busy/failed) from a status callback.
+
+    Only touches a call that has not already ended: a connected call is owned by
+    `/stream` teardown (`finish_call`, which sets `answered` + `end_reason`), and a
+    late `completed` callback must not clobber it. Returns whether a row was
+    updated — False means the call was already settled (idempotent). No `end_reason`
+    is set: the call never connected, so there was no "answered call" to end.
+    """
+    result = conn.execute(
+        calls.update()
+        .where(calls.c.id == call_id, calls.c.ended_at.is_(None))
+        .values(ended_at=_now(), disposition=disposition)
+    )
+    return result.rowcount > 0
+
+
 # --- answers --------------------------------------------------------------
 
 
@@ -432,10 +478,53 @@ def record_answer(
     )
 
 
+def record_refusal(
+    conn: Connection,
+    assignment_id: int,
+    question_id: str,
+    reason: str | None = None,
+    call_id: int | None = None,
+) -> None:
+    """Record that a question was declined, and why if the respondent said.
+
+    A declined row is not an answer: `declined=True` keeps it out of
+    `answered_question_ids`, so a declined *required* question leaves the
+    assignment `partial` (plan step 11). Upserts per `(assignment, question)` like
+    `record_answer`, so declining a question already answered flips it to declined.
+    """
+    stmt = insert(answers).values(
+        assignment_id=assignment_id,
+        question_id=question_id,
+        raw="",
+        value=None,
+        declined=True,
+        refusal_reason=reason,
+        call_id=call_id,
+        recorded_at=_now(),
+    )
+    conn.execute(
+        stmt.on_conflict_do_update(
+            constraint="uq_answer_assignment_question",
+            set_={"raw": stmt.excluded.raw, "value": stmt.excluded.value,
+                  "declined": stmt.excluded.declined,
+                  "refusal_reason": stmt.excluded.refusal_reason,
+                  "call_id": stmt.excluded.call_id, "recorded_at": stmt.excluded.recorded_at},
+        )
+    )
+
+
 def answered_question_ids(conn: Connection, assignment_id: int) -> set[str]:
+    """Question ids with a real answer on record — declined ones excluded.
+
+    This feeds `completion_status`, so a declined required question is *not* counted
+    as answered and the assignment stays `partial` (plan step 11).
+    """
     return set(
         conn.execute(
-            select(answers.c.question_id).where(answers.c.assignment_id == assignment_id)
+            select(answers.c.question_id).where(
+                answers.c.assignment_id == assignment_id,
+                answers.c.declined.is_(False),
+            )
         )
         .scalars()
         .all()
@@ -453,6 +542,8 @@ def answers_for(conn: Connection, assignment_id: int) -> list[Answer]:
             question_id=r.question_id,
             raw=r.raw,
             value=r.value,
+            declined=r.declined,
+            refusal_reason=r.refusal_reason,
             call_id=r.call_id,
         )
         for r in rows

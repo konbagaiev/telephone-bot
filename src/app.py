@@ -38,7 +38,13 @@ from src import bridge, db
 from src.agent.session import session_update
 from src.agent.tools import CallSession, finalize, handle_tool_call
 from src.config import load_config
-from src.models import EndReason, PhoneNumberError, TranscriptRole, completion_status
+from src.models import (
+    Disposition,
+    EndReason,
+    PhoneNumberError,
+    TranscriptRole,
+    completion_status,
+)
 from src.runner import carrier_from_env, place_next_call
 from src.telephony import Carrier
 from src.telephony.twilio import stream_twiml, validate_signature
@@ -181,7 +187,14 @@ async def stream(ws: WebSocket) -> None:
             _realtime_url(),
             additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
         ) as realtime:
-            await realtime.send(json.dumps(session_update(questionnaire)))
+            await realtime.send(
+                json.dumps(
+                    session_update(
+                        questionnaire,
+                        probe_refusal_reason=config.policy.probe_refusal_reason,
+                    )
+                )
+            )
             # Ask the agent to speak first, so the respondent is greeted without a pause.
             await realtime.send(json.dumps({"type": "response.create"}))
 
@@ -292,6 +305,42 @@ def get_db_conn():
 def carrier_dependency() -> Carrier:
     """The carrier for 'Call next'. Overridden in tests with a fake (no network)."""
     return carrier_from_env()
+
+
+# A never-answered call's final Twilio CallStatus → our disposition. `completed`
+# and `canceled` are absent on purpose: a connected call is settled by `/stream`
+# teardown, and re-settling it here would clobber its `end_reason` (see
+# db.record_pre_answer_outcome). Anything not listed is a no-op.
+_DISPOSITION_BY_STATUS = {
+    "no-answer": Disposition.NO_ANSWER,
+    "busy": Disposition.BUSY,
+    "failed": Disposition.CARRIER_FAILED,
+}
+
+
+@app.post("/call_status")
+async def call_status(request: Request, conn=Depends(get_db_conn)) -> Response:
+    """Twilio's status callback for a placed call — how we learn a call was never
+    answered (no-answer/busy/failed), so the retry policy can redial it (ADR-005).
+
+    A carrier webhook like `/voice`: it self-authenticates by signature (ADR-015),
+    not the UI token. The `call_id` naming the call rides in the query string, set
+    by the runner when it passed this URL to the carrier. A connected call is left
+    to `/stream` teardown — this only records outcomes for calls that never ended.
+    """
+    form = await request.form()
+    params = {key: str(value) for key, value in form.items()}
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not validate_signature(
+        os.environ["TWILIO_AUTH_TOKEN"], _signed_url(request), params, signature
+    ):
+        return Response(status_code=403)
+
+    call_id = request.query_params.get("call_id")
+    disposition = _DISPOSITION_BY_STATUS.get(params.get("CallStatus", ""))
+    if call_id and disposition is not None:
+        db.record_pre_answer_outcome(conn, int(call_id), disposition)
+    return Response(status_code=204)
 
 
 ui = APIRouter(prefix="/ui", dependencies=[Depends(require_ui_token)])

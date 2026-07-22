@@ -28,35 +28,8 @@ path and what it costs in control — unverified as of 2026-07-18.
 once the vertical slice runs, not before — this is a simplification of code that
 does not exist yet.
 
-### O8 — Retry & policy model shape (step 7)
-**Question.** How the retry/policy layer is modelled. Sketched while scoping step
-7; none of the sub-forks is resolved — do not promote to an ADR until decided.
-**Forks.**
-- **Retry cadence shape.** `retry_delays_minutes: [0, 2, 60]` (an ordered list;
-  its length encodes the attempt cap; each delay measured from the previous
-  call's `ended_at`) · vs today's two scalars `max_attempts` + `retry_after_minutes`.
-  The list would supersede those ADR-007 policy fields.
-- **`unreachable` terminal status.** Add a terminal assignment status for "retries
-  exhausted, never completed" · vs leaving such assignments in `in_progress`
-  (today's step-6 behaviour) · vs reusing `partial`. Touches ADR-005's status
-  lifecycle.
-- **Redial trigger.** Broad — any non-`completed`, non-`opted_out` outcome
-  including a never-connected `in_progress` · vs strict — only a technical
-  `remote_ended` drop, with no-answer/busy handled separately.
-- **Refusal-reason probe.** A `probe_refusal_reason` flag that has the agent ask
-  once for the *reason* a question was declined — deliberately softening step-6's
-  "accept the refusal, don't press". The reason stays transcript-only until step
-  11 decides persistence. This re-opens an already-shipped behaviour, so it needs
-  an explicit decision, not a silent flag.
-- **Enforcement seam.** Retry logic in the runner (the assignment-selection gate)
-  · vs the refusal probe in the session instructions (ADR-002).
-**Needs first.** Step 7 to start. **Review the commented-out policies** —
-`call_window`, `max_call_seconds`, `silence_timeout` are stubbed in `policy.yaml`,
-shipped inert to prove the framework, and are not yet decided; settle them here
-when step 7 begins.
-
 ### O9 — What drives the runner on a schedule?
-**Question.** Retry timing is decided from `now` (O8, spec `2026-07-22-0934`), but
+**Question.** Retry timing is decided from `now` (ADR-024, spec `2026-07-22-0934`), but
 something must invoke `python -m src.runner` repeatedly for a due retry — or any
 pending assignment — to actually fire. What runs it?
 **Options.** Cron on the VPS · a systemd timer · a long-running loop inside the
@@ -71,6 +44,36 @@ The runner is single-shot today (`main()` places at most one call and exits).
 tick"), so the poll interval sets how "immediate" the instant retry really is. Not
 urgent for the offline skeleton — the decision functions are correct given `now`
 and tests inject it — but required before retries fire on the live line.
+
+### O10 — Split `app.py` by HTTP boundary
+**Question.** `app.py` (~460 lines) now colocates three concerns: the
+carrier-facing edge (`/health`, `/voice`, `/stream`, `/call_status` — signature,
+TwiML, bridge wiring; the only place `telephony.twilio` is imported), the
+token-gated admin UI (`/ui/*`, the gate, render helpers), and shared wiring (the
+`FastAPI()` app, `get_db_conn`, url/config helpers). When does it split, and along
+what lines?
+**Options.**
+- **`src/web/` package** — `app.py` a thin composition root (`FastAPI()` +
+  `include_router`), `webhooks.py` (the Twilio edge), `ui.py` (the admin router +
+  its gate), `deps.py` (only what >1 router shares), `templates/` moves in. Mirrors
+  the `agent/`/`telephony/` package style.
+- **Flat siblings** — `src/webhooks.py` + `src/ui.py` + `src/deps.py`, `app.py`
+  stays as the root. Less churn, no new package.
+- **Leave as one file** until it actually hurts.
+**Rules if split.** One `APIRouter` per boundary owning its own routes/deps;
+imports point one way (routers → `db`/`config`/`runner`/`bridge`, never back to
+`app.py`, so shared deps live in `deps.py`, not `app.py`); the UI gate stays on the
+UI router and the webhooks stay off it (existing convention). Mechanical and
+behaviour-preserving — `TestClient` still hits `app`, `dependency_overrides`
+resolve by function identity (only test import paths change), plus
+`uvicorn src.app:app` → the new root in the Dockerfile.
+**Needs first / trigger.** Not yet — tolerable at ~460 lines. The natural moment is
+when `/call_status` + the retry work (spec `0934`) grow the webhook side enough
+that the UI block gets in the way of reading the telephony logic. Extract `ui.py`
+first (most self-contained), then `webhooks.py`.
+**Notes.** No ADR — a mechanical refactor, not a fork (unless package-vs-flat is
+made a deliberate repo convention). Update `architecture.md`'s module map in the
+same change (AGENTS.md step 6).
 
 ## Roadmap
 
@@ -153,10 +156,18 @@ and tests inject it — but required before retries fire on the live line.
    second runner run skips an in-flight call. **New behaviour to recover later:** a
    call that never connects now stays `in_progress` instead of being accidentally
    re-dialled — deliberate retry/unreachable handling is step 7.
-7. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
-   First slice specced (`2026-07-22-0934`): a policy-enforcement skeleton
-   (`src/policy.py`) with retry-on-disconnect and refusal-reason; the rest parked.
-   Retries only *fire* once something runs the runner on a schedule — see O9.
+7. **Policy.** _(first slice done 2026-07-22, spec `2026-07-22-0934` in
+   `specs/done/`, ADR-024/ADR-025.)_ A policy-enforcement skeleton (`src/policy.py`,
+   pure decisions over `Policy` + facts + an injected clock) with two policies wired
+   through it: retry-on-disconnect (escalating `retry_delays_minutes: [0, 2, 60]`,
+   keyed on `end_reason`/`disposition`, never-answered detected via the new
+   `/call_status` webhook, exhausted → `unreachable`/`partial`) and refusal-reason
+   (opt-in `probe_refusal_reason`, `record_refusal` stores a `declined` marker +
+   reason, excluded from completion — closes step 11). Offline-verified: full suite
+   green (103 tests). **Still parked** (commented in `policy.yaml`, out of the
+   model): calling window, `max_call_seconds`, `silence_timeout_seconds`, voicemail,
+   opt-out — each needs live-line debugging (steps 5/10). Retries only *fire* once
+   something runs the runner on a schedule — see O9.
 8. **Multilingual.** English and Russian per `Person.language`.
 9. **UI.** _(done 2026-07-22, spec `2026-07-22-0923` in `specs/done/`, ADR-023.)_
    A minimal token-gated `/ui` admin surface in the same ASGI app, server-rendered
@@ -191,22 +202,12 @@ and tests inject it — but required before retries fire on the live line.
       the greeting, very long or refused answers, a hang-up during the agent's
       turn. This step is where the live findings that are not features get chased
       down; it grows as smokes expose more.
-11. **Per-question refusal as data.** _(deferred from step 6 — 2026-07-22.)_ Step 6
-    handles a refusal in the model's *behaviour* only: it accepts a skip
-    graciously, moves on, and records nothing — so a refused required question
-    lands `partial` and the refusal survives only in the transcript. That removed
-    the blocker (and the false-`completed` risk of the model recording a refusal as
-    an answer), but leaves an open design question: should a refusal be a
-    first-class *fact*, distinct from "never asked"? Options to weigh later:
-    - **Lean on `required` vs optional** — already in the config (`Question.required`,
-      `completion_status`): an optional question refused is a non-event; only a
-      *required* refusal is the real case. Possibly enough on its own.
-    - **Persist a "declined" marker** — e.g. a nullable column on `answers` or a
-      distinct answer value — so retry logic (step 7) does not re-badger someone who
-      declined, and reporting can tell "declined" from "unanswered".
-    - **Keep completion honest either way** — a declined required question must stay
-      `partial`, never flip to `completed`. Decide the shape when step 7's retry
-      policy needs it; not before.
+11. **Per-question refusal as data.** _(done 2026-07-22 with step 7, spec
+    `2026-07-22-0934`, ADR-025.)_ Resolved by the "persist a declined marker"
+    option: `answers` gains `declined` + `refusal_reason`, written by a new
+    `record_refusal` tool, excluded from `answered_question_ids` so a declined
+    required question stays `partial`. Probing for the reason is opt-in
+    (`probe_refusal_reason`, default off = step-6 behaviour).
 
 ## Resolved
 
@@ -218,3 +219,6 @@ _(resolved items leave here and become ADRs in `docs/decisions.md`)_
   (carrier behind an interface)
 - P4 Conversation definition → ADR-007
 - O6 Hosting → ADR-008 (laptop behind a tunnel)
+- O8 Retry & policy model shape → ADR-024 (retry-on-disconnect), ADR-025 (refusal
+  as data). The parked policy values remain future roadmap-step-7 work, not an
+  open fork.

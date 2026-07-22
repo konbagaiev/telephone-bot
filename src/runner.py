@@ -53,30 +53,36 @@ def place_call_for_assignment(
         raise LookupError(f"assignment {assignment_id} has no person {assignment.person_id}")
 
     call = db.start_call(conn, assignment.id)
-    answer_url = f"{public_base_url.rstrip('/')}/voice?call_id={call.id}"
-    carrier_call_id = carrier.place_call(to=person.phone, answer_url=answer_url)
+    base = public_base_url.rstrip("/")
+    answer_url = f"{base}/voice?call_id={call.id}"
+    # Twilio POSTs the call's final status here, naming the call — how a
+    # never-answered call is detected so the retry policy can redial it (ADR-005).
+    status_callback_url = f"{base}/call_status?call_id={call.id}"
+    carrier_call_id = carrier.place_call(
+        to=person.phone, answer_url=answer_url, status_callback_url=status_callback_url
+    )
     db.set_carrier_call_id(conn, call.id, carrier_call_id)
     call.carrier_call_id = carrier_call_id
     # Mark the assignment in-flight so a second runner run does not re-pick it and
-    # call the person twice (next_pending_assignment filters on PENDING). Same
-    # transaction as the Call row, so a carrier failure rolls both back to pending.
-    # Recovery of a call that never connects is step 7 (policy), not here.
+    # call the person twice (select_next_to_call returns WAIT while a call is open).
+    # Same transaction as the Call row, so a carrier failure rolls both back.
     db.set_assignment_status(conn, assignment.id, AssignmentStatus.IN_PROGRESS)
     return call
 
 
 def place_next_call(
-    conn, config: Config, carrier: Carrier, public_base_url: str
+    conn, config: Config, carrier: Carrier, public_base_url: str, now=None
 ) -> Call | None:
-    """Place a call for the oldest pending assignment, or return None if none wait.
+    """Place the next call the retry policy calls for, or None if none is due.
 
     The one entry point shared by the CLI (`main`) and the admin UI's "Call next"
-    button: validate the config references up front, take the next pending
-    assignment (ADR-013), and dial it. Returns the Call, or None when nothing is
-    pending — the caller decides how to report that.
+    button: validate the config references up front, ask the policy which assignment
+    to dial (a fresh `pending` one, or one due for a retry — ADR-013, one at a
+    time), and dial it. Returns the Call, or None when nothing is due — the caller
+    decides how to report that. `now` is injectable so tests drive retry timing.
     """
     db.validate_references(conn, config)
-    assignment = db.next_pending_assignment(conn)
+    assignment = db.select_next_to_call(conn, config, config.policy, now or db._now())
     if assignment is None:
         return None
     return place_call_for_assignment(conn, config, carrier, assignment.id, public_base_url)

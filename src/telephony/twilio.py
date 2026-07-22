@@ -63,8 +63,16 @@ class TwilioCarrier:
         self._from = from_number
         self._client = client or Client(account_sid, auth_token)
 
-    def place_call(self, to: str, answer_url: str) -> str:
-        call = self._client.calls.create(to=to, from_=self._from, url=answer_url)
+    def place_call(
+        self, to: str, answer_url: str, status_callback_url: str | None = None
+    ) -> str:
+        kwargs: dict = {"to": to, "from_": self._from, "url": answer_url}
+        if status_callback_url:
+            # Ask Twilio to POST the final outcome so a never-answered call is not
+            # left hanging — `completed` covers no-answer/busy/failed/canceled too.
+            kwargs["status_callback"] = status_callback_url
+            kwargs["status_callback_event"] = ["completed"]
+        call = self._client.calls.create(**kwargs)
         return call.sid
 
     def hang_up(self, carrier_call_id: str) -> None:

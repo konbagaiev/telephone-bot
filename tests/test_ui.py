@@ -24,8 +24,10 @@ class FakeCarrier:
     def __init__(self):
         self.calls: list[dict] = []
 
-    def place_call(self, to, answer_url):
-        self.calls.append({"to": to, "answer_url": answer_url})
+    def place_call(self, to, answer_url, status_callback_url=None):
+        self.calls.append(
+            {"to": to, "answer_url": answer_url, "status_callback_url": status_callback_url}
+        )
         return f"CAfake{len(self.calls)}"
 
     def hang_up(self, carrier_call_id):  # pragma: no cover - unused here

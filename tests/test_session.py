@@ -6,7 +6,7 @@ that the whole questionnaire is presented and a goodbye is required before endin
 
 from __future__ import annotations
 
-from src.agent.session import instructions_for, session_update
+from src.agent.session import RECORD_REFUSAL_TOOL, instructions_for, session_update
 
 
 def test_instructions_cover_every_question(example_config):
@@ -46,3 +46,22 @@ def test_session_update_carries_the_instructions(example_config):
 
     assert update["type"] == "session.update"
     assert update["session"]["instructions"] == instructions_for(questionnaire)
+
+
+def test_refusal_probe_changes_the_instructions_and_tools(example_config):
+    # With the policy off (default), the model accepts a refusal and moves on, and
+    # record_refusal is not offered. With it on, it asks once why and may record it.
+    questionnaire = example_config.questionnaire("delivery_feedback")
+
+    off = session_update(questionnaire, probe_refusal_reason=False)
+    off_tool_names = {t["name"] for t in off["session"]["tools"]}
+    assert "record_refusal" not in off_tool_names
+    assert "ask once why" not in instructions_for(questionnaire, False).lower()
+
+    on = session_update(questionnaire, probe_refusal_reason=True)
+    on_tool_names = {t["name"] for t in on["session"]["tools"]}
+    assert RECORD_REFUSAL_TOOL["name"] in on_tool_names
+    on_instructions = instructions_for(questionnaire, True).lower()
+    assert "ask once why" in on_instructions
+    # Even when probing, a refusal is still accepted — the ask does not become a push.
+    assert "move on" in on_instructions

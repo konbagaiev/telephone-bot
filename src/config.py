@@ -7,7 +7,6 @@ and `db.py`.
 
 from __future__ import annotations
 
-from datetime import time
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -92,44 +91,40 @@ class Questionnaire(BaseModel):
         return next((q for q in self.questions if q.id == question_id), None)
 
 
-class VoicemailAction(str, Enum):
-    HANG_UP = "hang_up"
-    LEAVE_MESSAGE = "leave_message"
-
-
-class OptOutAction(str, Enum):
-    MARK_AND_STOP = "mark_and_stop"
-
-
-class CallWindow(BaseModel):
-    """Local hours during which it is acceptable to call."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    start: time
-    end: time
-
-
 class Policy(BaseModel):
     """Edge-case behaviour as parameters (ADR-007).
 
     Every value corresponds to an existing branch in code. If a value here ever
-    needs a condition or a formula, it should have been code instead.
+    needs a condition or a formula, it should have been code instead. Only the two
+    policies enforced today live here; the rest (calling window, call/silence
+    timeouts, voicemail, opt-out) are parked in `policy.yaml` until each earns a
+    code branch (roadmap steps 5/10 — see `docs/plan.md`).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    max_attempts: int = Field(default=3, ge=1)
-    retry_after_minutes: int = Field(default=120, ge=0)
-    call_window: CallWindow
-    max_call_seconds: int = Field(default=300, ge=1)
-    silence_timeout_seconds: int = Field(default=15, ge=1)
-    on_voicemail: VoicemailAction = VoicemailAction.HANG_UP
-    on_opt_out: OptOutAction = OptOutAction.MARK_AND_STOP
+    # Retry-on-disconnect (spec 2026-07-22-0934). An ordered list of delays, in
+    # minutes, measured from the previous call's `ended_at`; its length is the
+    # attempt cap (initial call + one retry per delay). `[0, 2, 60]` = retry
+    # immediately, then after 2 minutes, then after an hour. Which outcomes are
+    # retriable is decided in `src/policy.py` (keyed on `end_reason`/`disposition`).
+    retry_delays_minutes: list[int] = Field(default_factory=lambda: [0, 2, 60])
+
+    # When on, the agent asks once *why* a question was declined and records the
+    # reason via `record_refusal`; off (default) keeps step-6 behaviour (accept the
+    # refusal, move on, record nothing). Enforced in `src/agent/session.py`.
+    probe_refusal_reason: bool = False
 
     # Region assumed when a phone number is written in national form. Numbers are
     # stored in E.164 regardless (see models.normalise_phone).
     default_region: str = "ES"
+
+    @field_validator("retry_delays_minutes")
+    @classmethod
+    def _delays_non_negative(cls, v: list[int]) -> list[int]:
+        if any(d < 0 for d in v):
+            raise ValueError("retry_delays_minutes entries must be >= 0")
+        return v
 
 
 class Config(BaseModel):

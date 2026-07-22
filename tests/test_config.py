@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.config import AnswerType, ConfigError, VoicemailAction, load_config
+from src.config import AnswerType, ConfigError, load_config
 
 
 def test_example_config_loads(example_config):
@@ -14,8 +14,8 @@ def test_example_config_loads(example_config):
     assert questionnaire.question("was_on_time").answer_type is AnswerType.BOOLEAN
     assert questionnaire.required_question_ids == {"was_on_time"}
 
-    assert example_config.policy.max_attempts == 3
-    assert example_config.policy.on_voicemail is VoicemailAction.HANG_UP
+    assert example_config.policy.retry_delays_minutes == [0, 2, 60]
+    assert example_config.policy.probe_refusal_reason is False
     assert example_config.policy.default_region == "ES"
 
 
@@ -27,9 +27,7 @@ def test_unknown_questionnaire_names_the_known_ones(example_config):
 def _write(directory, questionnaires: str, policy: str = None):
     (directory / "questionnaires.yaml").write_text(questionnaires)
     (directory / "policy.yaml").write_text(
-        policy
-        if policy is not None
-        else "call_window: {start: '10:00', end: '20:00'}\n"
+        policy if policy is not None else "retry_delays_minutes: [0]\n"
     )
     return directory
 
@@ -94,7 +92,17 @@ def test_unknown_policy_key_is_rejected(tmp_path):
     _write(
         tmp_path,
         "- {id: q, questions: [{id: q1, intent: x}]}\n",
-        "call_window: {start: '10:00', end: '20:00'}\nmax_attemps: 5\n",
+        "retry_delays_minutes: [0]\nprobe_refusl_reason: true\n",
     )
-    with pytest.raises(ConfigError, match="max_attemps"):
+    with pytest.raises(ConfigError, match="probe_refusl_reason"):
+        load_config(tmp_path)
+
+
+def test_negative_retry_delay_is_rejected(tmp_path):
+    _write(
+        tmp_path,
+        "- {id: q, questions: [{id: q1, intent: x}]}\n",
+        "retry_delays_minutes: [0, -5]\n",
+    )
+    with pytest.raises(ConfigError, match="retry_delays_minutes"):
         load_config(tmp_path)

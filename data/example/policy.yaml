@@ -1,23 +1,27 @@
 # Edge-case behaviour as parameters (ADR-007). Every value here corresponds to
 # an existing branch in code — if a value ever needs a condition or a formula, it
 # should have been code instead.
-#
-# Enforcement of these values arrives with roadmap step 5; step 1 only represents
-# them.
 
-max_attempts: 3
-retry_after_minutes: 120
+# Retry on a broken or unanswered call (spec 2026-07-22-0934). An ordered list of
+# delays in minutes, measured from the previous call's end; its length caps the
+# attempts (initial call + one retry per delay). [0, 2, 60] = retry immediately,
+# then after 2 minutes, then after an hour, then give up (mark unreachable/partial).
+retry_delays_minutes: [0, 2, 60]
 
-call_window:
-  start: "10:00"
-  end: "20:00"
-
-max_call_seconds: 300
-silence_timeout_seconds: 15
-
-on_voicemail: hang_up
-on_opt_out: mark_and_stop
+# When true, the agent asks once *why* a question was declined and records the
+# reason. Default false keeps step-6 behaviour: accept the refusal, move on.
+probe_refusal_reason: false
 
 # Region assumed when a phone number is written in national form. Numbers are
 # stored in E.164 regardless.
 default_region: ES
+
+# Parked for later — shipped inert (no code branch yet), decided when their
+# roadmap step lands (steps 5/10, docs/plan.md). Kept here so the intent is not
+# lost; add them back to src/config.Policy in the same change that enforces them.
+#
+# call_window: {start: "10:00", end: "20:00"}   # local hours it is OK to call
+# max_call_seconds: 300                          # hard cap on a single call
+# silence_timeout_seconds: 15                    # give up after this much silence
+# on_voicemail: hang_up                          # hang_up | leave_message
+# on_opt_out: mark_and_stop                      # stop calling on an opt-out

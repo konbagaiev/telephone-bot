@@ -58,6 +58,8 @@ def handle_tool_call(session: CallSession, name: str, arguments: dict[str, Any])
     """
     if name == "record_answer":
         return _record_answer(session, arguments)
+    if name == "record_refusal":
+        return _record_refusal(session, arguments)
     if name == "end_call":
         return ToolResult(ok=True, message="ending", ended=True)
     return ToolResult(ok=False, message=f"unknown tool {name!r}")
@@ -89,6 +91,34 @@ def _record_answer(session: CallSession, arguments: dict[str, Any]) -> ToolResul
         message=(
             "recorded — ask any remaining questions (skip any they declined), then "
             "thank them, say goodbye, and end_call"
+        ),
+    )
+
+
+def _record_refusal(session: CallSession, arguments: dict[str, Any]) -> ToolResult:
+    """Store that a question was declined, and why if the caller gave a reason.
+
+    Only reached when the refusal-reason policy is on (the tool is absent from the
+    session otherwise). A declined question is not an answer — it is excluded from
+    completion (`db.record_refusal` sets `declined`), so a declined required
+    question keeps the assignment `partial` (plan step 11).
+    """
+    question_id = arguments.get("question_id", "")
+    if session.questionnaire.question(question_id) is None:
+        return ToolResult(ok=False, message=f"unknown question_id {question_id!r}")
+
+    db.record_refusal(
+        session.conn,
+        assignment_id=session.assignment_id,
+        question_id=question_id,
+        reason=arguments.get("reason"),
+        call_id=session.call_id,
+    )
+    return ToolResult(
+        ok=True,
+        message=(
+            "noted — move on to any remaining questions, then thank them, say "
+            "goodbye, and end_call"
         ),
     )
 

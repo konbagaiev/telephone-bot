@@ -20,11 +20,15 @@ class Carrier(Protocol):
     later roadmap step needs them.
     """
 
-    def place_call(self, to: str, answer_url: str) -> str:
+    def place_call(
+        self, to: str, answer_url: str, status_callback_url: str | None = None
+    ) -> str:
         """Dial `to`; when answered, the carrier fetches TwiML from `answer_url`.
 
-        Returns the carrier's own id for the call (Twilio's CallSid), stored on
-        `Call.carrier_call_id`.
+        If `status_callback_url` is given, the carrier POSTs the call's final status
+        there — how we learn a call was never answered (no-answer/busy), which the
+        retry policy needs (roadmap step 7). Returns the carrier's own id for the
+        call (Twilio's CallSid), stored on `Call.carrier_call_id`.
         """
         ...
 

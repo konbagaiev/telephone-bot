@@ -85,6 +85,39 @@ def test_second_answer_replaces_the_first(session):
     assert answers[0].raw == "actually yes"
 
 
+def test_record_refusal_stores_a_declined_marker_and_reason(session):
+    # With the refusal-reason policy on, the model records why a question was
+    # declined. It is stored, but not as an answer (plan step 11).
+    result = handle_tool_call(
+        session,
+        "record_refusal",
+        {"question_id": "was_on_time", "reason": "I'd rather not say"},
+    )
+    assert result.ok
+    answers = db.answers_for(session.conn, session.assignment_id)
+    assert len(answers) == 1
+    assert answers[0].declined is True
+    assert answers[0].refusal_reason == "I'd rather not say"
+
+
+def test_a_declined_required_question_is_not_counted_as_answered(session):
+    # `was_on_time` is the only required question; declining it must leave the
+    # assignment partial, never completed — a decline is not an answer.
+    handle_tool_call(session, "record_refusal", {"question_id": "was_on_time"})
+
+    assert "was_on_time" not in db.answered_question_ids(session.conn, session.assignment_id)
+    status = finalize(session, EndReason.AGENT_COMPLETED)
+    assert status is AssignmentStatus.PARTIAL
+
+
+def test_record_refusal_rejects_an_unknown_question_id(session):
+    result = handle_tool_call(
+        session, "record_refusal", {"question_id": "not_a_question", "reason": "x"}
+    )
+    assert not result.ok
+    assert db.answers_for(session.conn, session.assignment_id) == []
+
+
 def test_unknown_tool_is_refused_not_raised(session):
     result = handle_tool_call(session, "delete_everything", {})
     assert not result.ok

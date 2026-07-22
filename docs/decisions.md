@@ -748,3 +748,89 @@ runner and tool tests. The bridge, agent, tools, and telephony boundary are
 untouched: the UI only *initiates* a call and *reads* its results.
 
 **Status:** Accepted
+
+---
+
+## ADR-024 — Retry on disconnect: an escalating delay schedule, keyed on how the call ended
+
+**Context.** Resolves the retry half of O8. Roadmap step 7 needs the runner to
+redial a call that did not get the answers, without redialling someone who does not
+want the call. ADR-005 already modelled the call outcome in three fields and
+observed that "`end_reason != agent_completed` together with `status == partial` …
+is sufficient to drive retries" — this decision spends that observation. Constraint:
+ADR-007 keeps policy as data with a code branch per value, and ADR-013 places one
+call at a time.
+
+**Decision.**
+- **The cadence is a list, not two scalars.** `retry_delays_minutes: [0, 2, 60]`
+  replaces the old `max_attempts` + `retry_after_minutes`: an ordered list of
+  delays in minutes, each measured from the previous call's `ended_at`, whose
+  length is the attempt cap (initial call + one retry per entry). `[0, 2, 60]` =
+  retry immediately, then after 2 minutes, then after an hour. A list of concrete
+  values is still data, not a formula, so it stays within ADR-007.
+- **Retriability is read from the last call's outcome.** Retry on a hung-up/dropped
+  call (`end_reason = remote_ended`), an errored one (`agent_error`), or one that
+  never connected (`disposition ∈ {no_answer, busy, carrier_failed}`). Do **not**
+  retry when the agent wound the call up itself (`end_reason = agent_completed`) —
+  that is the signal the respondent declined the whole call or the questionnaire
+  finished. So "hung up → try again" and "said no, agent said goodbye → leave them"
+  are told apart with no new carrier signal.
+- **Never-answered is detected via a Twilio status callback.** A call that is never
+  picked up otherwise leaves the assignment stuck `in_progress` forever (a step-6
+  finding). `place_call` now passes a `/call_status` URL; that webhook records the
+  pre-answer disposition, idempotently and only for a call `/stream` teardown has
+  not already settled.
+- **Exhausted → a terminal status.** When the schedule runs out, the assignment is
+  labelled `unreachable` (no attempt ever connected) or `partial` (some did),
+  reusing ADR-005's status set. The retry decision itself is a pure function
+  (`src/policy.py`); the DB scan that applies it (`db.select_next_to_call`) is the
+  only writer, shared by the CLI and the UI's "Call next".
+
+**Consequences.** Both the runner and the admin UI honour retries through the one
+selection path, so neither can redial a person who is not due. The decision logic
+is unit-tested against synthetic call histories without a database or clock; the DB
+scan is tested against real Postgres. Costs, accepted: a retry re-asks the whole
+questionnaire (already-answered questions upsert harmlessly; resuming mid-way is a
+later refinement, plan step 10), and retries only *fire* when something invokes the
+runner on a schedule — deliberately left open as O9, since the decision is correct
+given `now` and the demo can invoke it by hand. The parked policy values (calling
+window, call/silence timeouts, voicemail, opt-out) are removed from the `Policy`
+model and commented in `policy.yaml`, so nothing reads a value it does not enforce.
+
+**Status:** Accepted
+
+---
+
+## ADR-025 — A per-question refusal is stored as data, excluded from completion
+
+**Context.** Resolves the refusal half of O8 and plan step 11. Step 6 handled a
+refusal in the model's behaviour only — accept, move on, record nothing — so a
+declined required question survived only in the transcript and was
+indistinguishable from "never asked". Step 11 listed the open options; step 7's
+retry policy is the point at which the distinction starts to matter (a declined
+question should not be re-badgered).
+
+**Decision.**
+- **A refusal is a first-class fact.** `answers` gains `declined` (boolean) and
+  `refusal_reason` (nullable text); a new `record_refusal` tool writes them. This
+  picks the "persist a declined marker" option over "lean on `required` only".
+- **Declined is not answered.** `answered_question_ids` — the input to
+  `completion_status` — excludes `declined` rows, so a declined *required* question
+  keeps the assignment `partial`, never `completed`. Completion stays computed, not
+  claimed (ADR-002).
+- **Probing is opt-in.** The `probe_refusal_reason` policy flag (default off)
+  decides whether the agent asks *once* why a question was declined and offers the
+  `record_refusal` tool. Off is exactly step-6 behaviour. On deliberately softens
+  step-6's "do not press": it asks for the reason once, then still accepts and
+  moves on — it never pushes for the answer itself.
+
+**Consequences.** Retry logic (ADR-024) will not re-ask a declined question once
+resume-mid-questionnaire lands (plan step 10), and reporting can tell "declined"
+from "unanswered". The reason is recorded only when the respondent gives one and
+the probe is on; with the probe off nothing changes. Recording a refusal is a model
+action (ADR-002) validated by our tool layer (unknown question id refused), and the
+instruction text is unit-tested (our construction, not the model's words). This
+turns step 11 from open to resolved; it does not change what "finished" means, only
+what a not-finished assignment can tell us about *why*.
+
+**Status:** Accepted

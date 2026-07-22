@@ -118,6 +118,12 @@ class Answer:
     question_id: str
     raw: str
     value: Any | None = None
+    # A declined question is recorded so retry logic does not re-badger it and
+    # reporting can tell "declined" from "never asked" (plan step 11). It is *not*
+    # an answer: `declined` rows are excluded from the answered set that drives
+    # completion, so a declined required question stays `partial`.
+    declined: bool = False
+    refusal_reason: str | None = None
     call_id: int | None = None
     id: int | None = None
 

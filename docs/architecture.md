@@ -13,11 +13,16 @@ assignment in-flight), the `/voice` webhook returns TwiML that streams the audio
 to `/stream`, and the bridge relays it to an OpenAI Realtime session that asks
 every question in order and writes each `record_answer` to Postgres. A minimal
 `/ui` admin surface (ADR-023) now manages people/assignments, launches the next
-pending call, and shows the answers and stored transcript. The live
+pending call, and shows the answers and stored transcript. A policy seam
+(`src/policy.py`) enforces two policies (ADR-024/ADR-025): retry-on-disconnect
+(the runner redials on an escalating schedule; a never-answered call is detected
+via the `/call_status` webhook) and an opt-in refusal-reason probe (`record_refusal`
+stores a declined marker). The live
 call itself is verified by a manual smoke, not in CI: Realtime behaves differently
-on a phone line than in any offline harness. Policy enforcement
-and multilingual operation are step 7 and beyond; the messy real-line conditions
-(background noise, drops) are deferred to the edge-case step (`docs/plan.md`).
+on a phone line than in any offline harness. The rest of the policy set (calling
+window, timeouts, voicemail, opt-out) is parked, and multilingual operation is step
+8; the messy real-line conditions (background noise, drops) are deferred to the
+edge-case step (`docs/plan.md`).
 
 ## Shape
 
@@ -37,16 +42,17 @@ publish.
 | Module | Holds |
 |---|---|
 | `src/config.py` | `Question`, `Questionnaire`, `Policy`; YAML loading; `ConfigError` naming file and field |
-| `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`, `TranscriptSegment`; the status/role enums; phone normalisation; `completion_status()` |
-| `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries |
+| `src/models.py` | `Person`, `Assignment`, `Call`, `Answer` (incl. the `declined`/`refusal_reason` refusal marker), `TranscriptSegment`; the status/role enums; phone normalisation; `completion_status()` |
+| `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries; `select_next_to_call` applies the retry policy, `record_refusal`/`record_pre_answer_outcome` back the two new policies |
+| `src/policy.py` | The policy-enforcement seam (ADR-024): pure `retry_decision`/`terminal_status` over `Policy` + calls + an injected clock. No I/O — the DB scan in `db.py` is the only writer |
 | `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
 | `src/telephony/` | The carrier boundary (ADR-004): `Carrier` Protocol in `__init__`, Twilio adapter in `twilio.py` (REST dial, signature validation, TwiML). No Twilio type leaks past it |
 | `src/agent/` | `session.py` — Realtime `session.update` and the tool definitions; `tools.py` — turning a tool call into a write (the primary test surface). The model owns speech, this owns facts (ADR-002) |
 | `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear`; an end-of-call `mark` so an agent-ended call drains Twilio playback before closing; dispatches tool calls and transcription events (ADR-011) out to callbacks |
-| `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run. `place_next_call` is the shared entry the CLI and the UI's "Call next" both use |
-| `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge), and the token-gated `/ui` admin router (ADR-023) |
+| `src/runner.py` | `python -m src.runner` — place one call for the next assignment the policy calls for (ADR-013/ADR-024). Config is read per run. `place_next_call` is the shared entry the CLI and the UI's "Call next" both use |
+| `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `POST /call_status` (Twilio status callback → disposition, ADR-024), `WS /stream` (the live bridge), and the token-gated `/ui` admin router (ADR-023) |
 | `src/templates/` | Jinja templates for the admin UI: `index.html`, `assignment.html`, `transcript.html`. Self-contained, no external assets (ADR-023) |
-| `migrations/` | Alembic; `0001_initial` creates the four tables, `0002` adds `transcript_segments` |
+| `migrations/` | Alembic; `0001_initial` creates the four tables, `0002` adds `transcript_segments`, `0003` adds the `answers` refusal columns |
 | `Dockerfile`, `docker-compose.yml` | The app image and its service, behind Traefik on `phone-bot.bagaiev.com`, using the shared Postgres (ADR-017) |
 | `.github/workflows/deploy.yml` | On push to `main`: test → pull → migrate → recreate container → health check |
 | `data/example/` | A fictional questionnaire and policy |
@@ -66,6 +72,14 @@ pure function of the questionnaire and the answers on record. The model calling
 unique constraint behind it.
 
 **Three independent status fields**, not one — see ADR-005. Do not collapse them.
+
+**Policy is data with a code branch per value (ADR-007), and the branch lives in
+`src/policy.py`.** A `Policy` value must map to a pure decision there; if it needs a
+condition or a formula it should have been code. Retry keys on *how the last call
+ended* (`end_reason`/`disposition`, ADR-024), never on a hangup-cause the carrier
+does not give us. Only the enforced values live in the `Policy` model; parked ones
+are commented in `policy.yaml` until they earn a branch, so nothing parses a value
+it does not act on.
 
 **The admin UI is gated; the webhooks are not.** The `/ui` router carries a
 single-token dependency (`UI_TOKEN`, in the URL then a cookie, ADR-023). `/voice`,
@@ -90,11 +104,18 @@ to `.env` to start.
 
 One call, end to end:
 
-1. **Runner** (`src/runner.py`) takes the next pending assignment (ADR-013),
-   creates the `Call` row, and asks the carrier to dial. The answer URL it hands
-   the carrier names the call: `…/voice?call_id=<id>`. Placement moves the
-   assignment `pending → in_progress` in the same transaction, so a second runner
-   run does not re-pick an in-flight call and dial the person twice.
+1. **Runner** (`src/runner.py`) asks `db.select_next_to_call` which assignment to
+   dial — a fresh `pending` one, or one due for a retry under the policy
+   (`policy.retry_decision`, ADR-024) — creates the `Call` row, and asks the carrier
+   to dial. The answer URL names the call (`…/voice?call_id=<id>`); a
+   `…/call_status?call_id=<id>` URL goes alongside it so the carrier reports the
+   call's final status. Placement moves the assignment `pending → in_progress` in
+   the same transaction, so a second run does not re-pick an in-flight call (its
+   open `Call` row makes the policy `WAIT`) and dial the person twice. A call that
+   is never answered is recorded by **`POST /call_status`** (disposition
+   `no_answer`/`busy`/`failed`), which makes it eligible for a retry; a connected
+   call is left to `/stream` teardown. Exhausting the retry schedule lands the
+   assignment `unreachable` (never connected) or `partial` (connected, incomplete).
 2. **`POST /voice`** validates the Twilio signature (against the *public* URL,
    reconstructed from `PUBLIC_BASE_URL` — behind Traefik the container's own URL
    differs) and returns TwiML: `<Connect><Stream>` pointed at `/stream`, carrying
@@ -118,7 +139,9 @@ One call, end to end:
    `transcript_segments` — a debug record of what was actually said, isolated so a
    failed write never breaks the call.
 5. **A tool call** (`src/agent/tools.py`) is written to Postgres: `record_answer`
-   after validating the question id, `end_call` to wind up. When the **agent** ends
+   after validating the question id, `record_refusal` (offered only when the
+   refusal-reason policy is on — ADR-025) to store a declined marker + reason,
+   `end_call` to wind up. When the **agent** ends
    the call, teardown first drains Twilio playback — it sends an end-of-call `mark`
    and waits (bounded) for Twilio to echo it, plus a short grace — so the agent's
    goodbye is heard, not clipped, before the sockets close. On teardown —
@@ -165,14 +188,18 @@ back, so tests cannot see each other.
 |---|---|
 | The questions asked | `data/example/questionnaires.yaml` — no code change |
 | Edge-case behaviour values | `data/example/policy.yaml` — the *value* only; a new *kind* of behaviour is code plus a test |
-| What "finished" means | `completion_status()` in `src/models.py` |
+| Retry cadence / which outcomes retry | `retry_delays_minutes` in `policy.yaml` (value); the decision itself in `src/policy.py` (ADR-024) |
+| What "finished" means | `completion_status()` in `src/models.py` (declined answers excluded via `db.answered_question_ids`) |
 | The stored shape of anything | `src/db.py` **and** a new migration — the two must move together |
-| What the agent is told / may do | `instructions_for()` and the tool defs in `src/agent/session.py` |
-| How a tool call becomes data | `src/agent/tools.py` (`handle_tool_call`, `finalize`) |
+| What the agent is told / may do | `instructions_for()` and the tool defs in `src/agent/session.py` (the refusal clause + `record_refusal` tool are gated on `probe_refusal_reason`) |
+| How a tool call becomes data | `src/agent/tools.py` (`handle_tool_call`, `_record_refusal`, `finalize`) |
 | The carrier (add a provider) | a new class satisfying `Carrier` in `src/telephony/`; nothing else changes |
 | The admin UI (pages, forms) | the `/ui` router in `src/app.py` and the templates in `src/templates/` (ADR-023) |
 
-**Last verified against commit:** the admin UI (roadmap step 9, ADR-023),
+**Last verified against commit:** the policy skeleton (roadmap step 7,
+ADR-024/ADR-025) — retry-on-disconnect and the refusal-reason probe — offline only:
+full suite green (103 tests), `ruff` clean. Retry firing on the live line waits on
+a scheduler (O9) and is not yet smoked. It sits on the admin UI (step 9, ADR-023),
 deployed to `phone-bot.bagaiev.com` on 2026-07-22 and verified in prod — the gate
 behaves (`/ui` 401 without the token, 200 with it, `/voice` still 403-by-signature,
 so the token never reached the webhook) and the panel works. It sits on the
