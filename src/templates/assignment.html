@@ -9,6 +9,7 @@
     table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
     th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #eee; }
     .status { font-variant: small-caps; font-weight: 600; }
+    .declined { color: #b4451a; font-variant: small-caps; font-weight: 600; }
     .muted { color: #777; }
     code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 4px; }
   </style>
@@ -28,8 +29,14 @@
     {% for a in answers %}
     <tr>
       <td><strong>{{ a.question_id }}</strong></td>
+      {% if a.declined %}
+      <td colspan="2">
+        <span class="declined">declined</span>{% if a.refusal_reason %} — {{ a.refusal_reason }}{% endif %}
+      </td>
+      {% else %}
       <td>{{ a.raw }}</td>
       <td><code>{{ a.value }}</code></td>
+      {% endif %}
     </tr>
     {% endfor %}
   </table>

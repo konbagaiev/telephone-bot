@@ -151,6 +151,20 @@ def test_assignment_view_shows_the_recorded_answer(client, conn):
     assert "partial" in response.text  # required `was_on_time` still unanswered
 
 
+def test_assignment_view_marks_a_declined_question(client, conn):
+    person = db.get_or_create_person(conn, "+491701234567", default_region="DE")
+    assignment = db.create_assignment(conn, person.id, "delivery_feedback")
+    db.record_refusal(conn, assignment.id, "was_on_time", reason="too personal")
+
+    response = client.get(f"/ui/assignments/{assignment.id}?token={TOKEN}")
+
+    assert response.status_code == 200
+    assert "declined" in response.text
+    assert "too personal" in response.text  # the refusal reason when the caller gave one
+    # A declined required question keeps the assignment partial, not completed.
+    assert "partial" in response.text
+
+
 def test_transcript_view_shows_stored_segments(client, conn):
     person = db.get_or_create_person(conn, "+491701234567", default_region="DE")
     assignment = db.create_assignment(conn, person.id, "delivery_feedback")
