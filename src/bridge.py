@@ -28,11 +28,11 @@ log = logging.getLogger(__name__)
 RESPONDENT_TRANSCRIPT_EVENT = "conversation.item.input_audio_transcription.completed"
 AGENT_TRANSCRIPT_EVENT = "response.output_audio_transcript.done"
 
-# The Twilio mark we send after the agent's last audio frame when the agent ends
-# the call. Twilio echoes a `mark` event back once it has played everything queued
-# up to it, which is how we know the goodbye has actually been heard before we
-# close the sockets (the model finishes generating the audio well before Twilio
-# finishes playing it).
+# The model generates the goodbye faster than Twilio plays it, so closing the
+# sockets when the agent calls `end_call` would cut the closing words off. Instead
+# we send this named Twilio `mark` after the agent's last audio frame: Twilio
+# echoes it back once it has played everything queued ahead of it, telling us the
+# goodbye has actually been heard and it is safe to close.
 END_OF_CALL_MARK = "end-of-call"
 
 

@@ -21,17 +21,9 @@ import websockets
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from websockets.exceptions import ConnectionClosed
 
-from src import db
+from src import bridge, db
 from src.agent.session import session_update
 from src.agent.tools import CallSession, finalize, handle_tool_call
-from src.bridge import (
-    END_OF_CALL_MARK,
-    BridgeState,
-    Sink,
-    await_playback_drained,
-    end_of_call_mark,
-    run_bridge,
-)
 from src.config import load_config
 from src.models import EndReason, TranscriptRole
 from src.telephony.twilio import stream_twiml, validate_signature
@@ -140,7 +132,7 @@ async def stream(ws: WebSocket) -> None:
     """
     await ws.accept()
     twilio_source = ws.iter_text()
-    state = BridgeState()
+    state = bridge.BridgeState()
 
     # Twilio sends `connected` then `start`; the call id we need to load the
     # assignment rides in `start.customParameters`. Peel messages off until then.
@@ -167,7 +159,7 @@ async def stream(ws: WebSocket) -> None:
     questionnaire = config.questionnaire(assignment.questionnaire_id)
 
     ended_by_agent = False
-    twilio_sink: Sink = _TwilioSink(ws)
+    twilio_sink: bridge.Sink = _TwilioSink(ws)
 
     try:
         async with websockets.connect(
@@ -207,9 +199,11 @@ async def stream(ws: WebSocket) -> None:
                 # grace, so the closing words are heard before the sockets close.
                 if state.stream_sid:
                     await twilio_sink.send(
-                        json.dumps(end_of_call_mark(state.stream_sid, END_OF_CALL_MARK))
+                        json.dumps(
+                            bridge.end_of_call_mark(state.stream_sid, bridge.END_OF_CALL_MARK)
+                        )
                     )
-                    await await_playback_drained(
+                    await bridge.await_playback_drained(
                         state.playback_drained, _DRAIN_TIMEOUT_SECONDS
                     )
                     await asyncio.sleep(_GOODBYE_GRACE_SECONDS)
@@ -226,7 +220,7 @@ async def stream(ws: WebSocket) -> None:
                     log.warning("failed to store transcript segment", exc_info=True)
 
             try:
-                await run_bridge(
+                await bridge.run_bridge(
                     twilio_source,
                     twilio_sink,
                     realtime,
