@@ -44,6 +44,28 @@ def test_record_answer_writes_to_postgres(session):
     assert answers[0].call_id == session.call_id
 
 
+def test_records_answers_to_several_questions(session):
+    # The whole questionnaire is asked (roadmap step 6): each answer is stored
+    # against its own question id, and the tool feedback tracks what remains.
+    first = handle_tool_call(
+        session, "record_answer", {"question_id": "improvement", "raw": "faster delivery"}
+    )
+    # `improvement` is optional, so the required set (`was_on_time`) is still open.
+    assert first.ok
+    assert "was_on_time" in first.message
+
+    second = handle_tool_call(
+        session, "record_answer", {"question_id": "was_on_time", "raw": "yes on time"}
+    )
+    assert second.ok
+    # Every required question is now answered — the model is nudged to close out.
+    assert "was_on_time" not in second.message
+    assert "end_call" in second.message
+
+    stored = {a.question_id for a in db.answers_for(session.conn, session.assignment_id)}
+    assert stored == {"improvement", "was_on_time"}
+
+
 def test_unknown_question_id_is_refused_without_writing(session):
     result = handle_tool_call(
         session,

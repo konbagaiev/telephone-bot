@@ -151,7 +151,6 @@ async def stream(ws: WebSocket) -> None:
         await ws.close()
         return
     questionnaire = config.questionnaire(assignment.questionnaire_id)
-    question = questionnaire.questions[0]  # one question in this slice
 
     ended_by_agent = False
     twilio_sink: Sink = _TwilioSink(ws)
@@ -161,7 +160,7 @@ async def stream(ws: WebSocket) -> None:
             _realtime_url(),
             additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
         ) as realtime:
-            await realtime.send(json.dumps(session_update(question)))
+            await realtime.send(json.dumps(session_update(questionnaire)))
             # Ask the agent to speak first, so the respondent is greeted without a pause.
             await realtime.send(json.dumps({"type": "response.create"}))
 

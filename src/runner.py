@@ -17,7 +17,7 @@ from pathlib import Path
 from src import db
 from src.config import Config, load_config
 from src.env import load_local_env
-from src.models import Call
+from src.models import AssignmentStatus, Call
 from src.telephony import Carrier
 from src.telephony.twilio import TwilioCarrier
 
@@ -57,6 +57,11 @@ def place_call_for_assignment(
     carrier_call_id = carrier.place_call(to=person.phone, answer_url=answer_url)
     db.set_carrier_call_id(conn, call.id, carrier_call_id)
     call.carrier_call_id = carrier_call_id
+    # Mark the assignment in-flight so a second runner run does not re-pick it and
+    # call the person twice (next_pending_assignment filters on PENDING). Same
+    # transaction as the Call row, so a carrier failure rolls both back to pending.
+    # Recovery of a call that never connects is step 7 (policy), not here.
+    db.set_assignment_status(conn, assignment.id, AssignmentStatus.IN_PROGRESS)
     return call
 
 

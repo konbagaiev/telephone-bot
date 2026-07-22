@@ -89,26 +89,18 @@ does not exist yet.
      `2026-07-22-0012`) is the first move: it makes the divergence visible.
      Repointing `raw` at the transcript is a later, separate decision.
    The transcript-storage spec is the debugging instrument for this step.
-6. **Full questionnaire.** Multiple questions, required-answer completion logic,
-   `Assignment.status` transitions.
-
-   **Confirmed limitation from step 4:** `/stream` asks only
-   `questionnaire.questions[0]` (hard-coded), so a questionnaire that defines more
-   than one question — like the example's `delivery_feedback` (`was_on_time` +
-   `improvement`) — still gets only the first asked, and only that one can be
-   recorded. Observed live on 2026-07-21: the second question was never put. Step 6
-   iterates all questions in order and drives the conversation until every required
-   one is answered (completion is already computed over the full set in
-   `completion_status`).
-
-   **Fix carried from step 4:** placing a call does not move the assignment off
-   `pending` (`place_call_for_assignment` never sets a status; `IN_PROGRESS` is
-   defined but unused). So a second runner run before the call finishes re-picks
-   the same `pending` assignment and calls the person twice — the assignment only
-   leaves `pending` when `/stream` runs `refresh_completion` at teardown. The fix
-   is a `pending → in_progress` transition at placement time, so the next pick
-   skips an in-flight call. Coordination is via the DB, since placement (runner)
-   and completion (web app) are separate processes.
+6. **Full questionnaire.** _(done 2026-07-22, spec `2026-07-22-0755` in
+   `specs/done/` — offline-verified; live smoke still owed.)_ The model is handed
+   the whole ordered question list in its session instructions and drives the
+   conversation itself (ADR-002): it asks each in turn, records every answer, and
+   says goodbye before `end_call`. `record_answer` feeds back which required
+   questions remain, so the set is reliably closed. Completion is computed over the
+   full required set (`completion_status`), unchanged. Also landed the carried
+   double-call fix: `place_call_for_assignment` now moves the assignment
+   `pending → in_progress` at placement (same transaction as the Call row), so a
+   second runner run skips an in-flight call. **New behaviour to recover later:** a
+   call that never connects now stays `in_progress` instead of being accidentally
+   re-dialled — deliberate retry/unreachable handling is step 7.
 7. **Policy.** Retries, calling window, timeouts, voicemail handling, opt-out.
 8. **Multilingual.** English and Russian per `Person.language`.
 9. **UI.** Only once the above works (ADR-006: UI last, on top of a system that
@@ -120,6 +112,22 @@ does not exist yet.
    - **Read the transcript** — the stored call transcript, for comparing what was
      actually said against what was recorded. Depends on step 5's transcript
      storage (spec `2026-07-22-0012`).
+10. **Edge-case testing.** Deliberately exercise the messy real-line conditions a
+    happy-path smoke never hits, and make the stack behave under each:
+    - **Background noise** — a TV or a room of people: server VAD treats it as
+      speech and the model records answers no one gave (the step-5 finding). Needs
+      VAD tuning / input noise reduction / semantic VAD, verified against the
+      stored transcript.
+    - **Unexpected drops** — the respondent hangs up mid-answer, the carrier cuts
+      out, the socket dies: the call must finalize cleanly and the assignment land
+      `partial`, never a phantom `completed`.
+    - **Callbacks after a delay** — retrying a person later (missed, busy,
+      voicemail) without double-calling or re-asking answered questions; overlaps
+      step 7's policy and the step-6 `in_progress` transition.
+    - **Others as they surface** — silence / no answer, the respondent talking over
+      the greeting, very long or refused answers, a hang-up during the agent's
+      turn. This step is where the live findings that are not features get chased
+      down; it grows as smokes expose more.
 
 ## Resolved
 

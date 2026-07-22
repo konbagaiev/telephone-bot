@@ -56,6 +56,22 @@ def test_places_call_and_stores_carrier_id(conn, example_config, pending_assignm
     assert row.carrier_call_id == "CA123"
 
 
+def test_placing_a_call_marks_the_assignment_in_progress(conn, example_config, pending_assignment):
+    _, assignment = pending_assignment
+    carrier = FakeCarrier()
+
+    place_call_for_assignment(
+        conn, example_config, carrier, assignment.id, "https://phone-bot.test"
+    )
+
+    # The assignment is now in-flight, so the next runner run skips it rather than
+    # calling the person a second time (the double-call fix, roadmap step 6).
+    from src.models import AssignmentStatus
+
+    assert db.get_assignment(conn, assignment.id).status is AssignmentStatus.IN_PROGRESS
+    assert db.next_pending_assignment(conn) is None
+
+
 def test_next_pending_assignment_is_the_oldest(conn, example_config):
     p1 = db.get_or_create_person(conn, "+491700000001", default_region="DE")
     p2 = db.get_or_create_person(conn, "+491700000002", default_region="DE")

@@ -4,16 +4,17 @@
 > change that alters the architecture. Describe shape (modules, flow), not
 > line-level detail — the code is the source of truth for details.
 
-**Status: data layer + deploy skeleton + vertical slice (one call, one
-question).** The questionnaire, the people, and the results exist; a FastAPI
+**Status: data layer + deploy skeleton + a call that asks the whole
+questionnaire.** The questionnaire, the people, and the results exist; a FastAPI
 service is deployed to the VPS behind Traefik by a GitHub Actions pipeline; and
-the whole call path is wired — a runner places an outbound call, the `/voice`
-webhook returns TwiML that streams the audio to `/stream`, and the bridge relays
-it to an OpenAI Realtime session whose `record_answer` tool call is written to
-Postgres. The live call itself is verified by a manual smoke, not in CI: Realtime
-behaves differently on a phone line than in any offline harness (roadmap step 4).
-Debugging the live behaviour on a real line, multiple questions, policy
-enforcement, and multilingual operation are step 5 and beyond (`docs/plan.md`).
+the whole call path is wired — a runner places an outbound call (and marks the
+assignment in-flight), the `/voice` webhook returns TwiML that streams the audio
+to `/stream`, and the bridge relays it to an OpenAI Realtime session that asks
+every question in order and writes each `record_answer` to Postgres. The live
+call itself is verified by a manual smoke, not in CI: Realtime behaves differently
+on a phone line than in any offline harness (roadmap step 4). Policy enforcement
+and multilingual operation are step 7 and beyond; the messy real-line conditions
+(background noise, drops) are deferred to the edge-case step (`docs/plan.md`).
 
 ## Shape
 
@@ -80,14 +81,19 @@ One call, end to end:
 
 1. **Runner** (`src/runner.py`) takes the next pending assignment (ADR-013),
    creates the `Call` row, and asks the carrier to dial. The answer URL it hands
-   the carrier names the call: `…/voice?call_id=<id>`.
+   the carrier names the call: `…/voice?call_id=<id>`. Placement moves the
+   assignment `pending → in_progress` in the same transaction, so a second runner
+   run does not re-pick an in-flight call and dial the person twice.
 2. **`POST /voice`** validates the Twilio signature (against the *public* URL,
    reconstructed from `PUBLIC_BASE_URL` — behind Traefik the container's own URL
    differs) and returns TwiML: `<Connect><Stream>` pointed at `/stream`, carrying
    `call_id` as a `<Parameter>`. No `<Say>`/`<Play>` — the model owns speech.
 3. **`WS /stream`** reads the stream's `start` event for `call_id`, loads the
-   assignment and its (one) question, opens the OpenAI Realtime socket, and sends
-   `session.update` followed by `response.create` so the agent greets first. This
+   assignment and its questionnaire, opens the OpenAI Realtime socket, and sends
+   `session.update` followed by `response.create` so the agent greets first. The
+   session instructions carry every question in order; the model asks them all,
+   records each answer as it comes, and says goodbye before `end_call` (ADR-002).
+   This
    is the **GA (`gpt-realtime`) API shape**, not the beta one (a live-smoke
    finding): `session.type = "realtime"`, audio config under
    `session.audio.input/output` with format `audio/pcmu` (= G.711 μ-law), server

@@ -10,17 +10,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.config import Question
+from src.config import Question, Questionnaire
 
-# One question per call in this slice, so the two tools are all the model needs:
-# record the answer, then end the call. The parameters are described, never the
-# wording — phrasing belongs to the model (ADR-002).
+# The model asks the whole questionnaire and drives its own turn-taking (ADR-002),
+# so the two tools are all it needs: record each answer as it comes, then end the
+# call. The parameters are described, never the wording — phrasing belongs to the
+# model (ADR-002).
 RECORD_ANSWER_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "record_answer",
     "description": (
-        "Record the caller's answer to a question. Call this once the caller has "
-        "actually answered — not before."
+        "Record the caller's answer to a question. Call this each time the caller "
+        "answers one of the questions — once per question, and only once they have "
+        "actually answered it, not before."
     ),
     "parameters": {
         "type": "object",
@@ -49,8 +51,9 @@ END_CALL_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "end_call",
     "description": (
-        "End the call. Call this after the question is answered and you have "
-        "thanked the caller, or if the caller declines to continue."
+        "End the call. Call this once you have asked every question and recorded "
+        "the answers, and after you have thanked the caller and said goodbye — or "
+        "if the caller declines to continue."
     ),
     "parameters": {
         "type": "object",
@@ -66,27 +69,41 @@ END_CALL_TOOL: dict[str, Any] = {
 }
 
 
-def instructions_for(question: Question) -> str:
-    """The system instructions for a one-question call.
+def _question_line(index: int, question: Question) -> str:
+    """One line describing a question to the model: its id, intent, and — where an
+    exact wording matters (ADR-007) — the `phrasing` override to use verbatim."""
+    override = question.phrasing.get("en")
+    ask = f'ask it exactly like this: "{override}"' if override else f"about: {question.intent}"
+    return f"{index}. question_id '{question.id}' — {ask}"
 
-    Guides behaviour and tool use, not wording: the model chooses the words. The
-    question's `phrasing` override is offered only where exact wording matters
-    (ADR-007); otherwise the model phrases the intent itself.
+
+def instructions_for(questionnaire: Questionnaire) -> str:
+    """The system instructions for a call that asks the whole questionnaire.
+
+    Guides behaviour and tool use, not wording: the model chooses the words and
+    drives its own turn-taking (ADR-002). A `phrasing` override is offered only
+    where exact wording matters (ADR-007); otherwise the model phrases the intent
+    itself. The model asks every question in order, records each answer as it
+    comes, and closes the call with a goodbye.
     """
-    ask = question.phrasing.get("en") or f"Ask about: {question.intent}."
+    questions = "\n".join(
+        _question_line(i, q) for i, q in enumerate(questionnaire.questions, start=1)
+    )
     return (
         "You are a friendly assistant making a short outbound phone call. "
-        "Greet the person briefly and naturally, then ask them one question. "
-        f"{ask} "
-        "You own the wording — speak like a person, not a script. "
-        "When they have answered, call the record_answer tool with "
-        f"question_id set to '{question.id}', raw set to their answer in their "
-        "own words, and value set to a normalised form. Then thank them and call "
-        "end_call. Ask only this one question; do not add others."
+        "Greet the person briefly and naturally, then ask them these questions, in "
+        "order:\n"
+        f"{questions}\n"
+        "You own the wording — speak like a person, not a script. Ask one question "
+        "at a time, and as soon as the person answers a question, call the "
+        "record_answer tool with question_id set to that question's id, raw set to "
+        "their answer in their own words, and value set to a normalised form. Ask "
+        "only these questions; do not add others. When every question has been "
+        "answered, thank the person, say goodbye, and then call end_call."
     )
 
 
-def session_update(question: Question, voice: str = "marin") -> dict[str, Any]:
+def session_update(questionnaire: Questionnaire, voice: str = "marin") -> dict[str, Any]:
     """The `session.update` event sent once the Realtime socket is open.
 
     GA (gpt-realtime) shape: audio config lives under `session.audio.input/output`,
@@ -99,7 +116,7 @@ def session_update(question: Question, voice: str = "marin") -> dict[str, Any]:
         "type": "session.update",
         "session": {
             "type": "realtime",
-            "instructions": instructions_for(question),
+            "instructions": instructions_for(questionnaire),
             "output_modalities": ["audio"],
             "audio": {
                 "input": {
