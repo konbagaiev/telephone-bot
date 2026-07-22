@@ -22,9 +22,10 @@ from websockets.exceptions import ConnectionClosed
 
 log = logging.getLogger(__name__)
 
-# GA (gpt-realtime) transcription events. The respondent name is documented; the
-# agent name is a best-guess pending a live smoke, so any other `*transcript*`
-# event is logged (see pump_realtime_to_twilio) rather than silently dropped.
+# GA (gpt-realtime) transcription events, both confirmed by a live smoke
+# (2026-07-22, call 7): each stored its role and no other `*transcript*` event
+# appeared. The unhandled-event logging in pump_realtime_to_twilio stays as a
+# guard in case a future GA change renames one.
 RESPONDENT_TRANSCRIPT_EVENT = "conversation.item.input_audio_transcription.completed"
 AGENT_TRANSCRIPT_EVENT = "response.output_audio_transcript.done"
 
