@@ -187,14 +187,7 @@ async def stream(ws: WebSocket) -> None:
             _realtime_url(),
             additional_headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
         ) as realtime:
-            await realtime.send(
-                json.dumps(
-                    session_update(
-                        questionnaire,
-                        probe_refusal_reason=config.policy.probe_refusal_reason,
-                    )
-                )
-            )
+            await realtime.send(json.dumps(session_update(questionnaire, config.policy)))
             # Ask the agent to speak first, so the respondent is greeted without a pause.
             await realtime.send(json.dumps({"type": "response.create"}))
 
