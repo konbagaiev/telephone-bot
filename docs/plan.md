@@ -128,6 +128,22 @@ does not exist yet.
       the greeting, very long or refused answers, a hang-up during the agent's
       turn. This step is where the live findings that are not features get chased
       down; it grows as smokes expose more.
+11. **Per-question refusal as data.** _(deferred from step 6 — 2026-07-22.)_ Step 6
+    handles a refusal in the model's *behaviour* only: it accepts a skip
+    graciously, moves on, and records nothing — so a refused required question
+    lands `partial` and the refusal survives only in the transcript. That removed
+    the blocker (and the false-`completed` risk of the model recording a refusal as
+    an answer), but leaves an open design question: should a refusal be a
+    first-class *fact*, distinct from "never asked"? Options to weigh later:
+    - **Lean on `required` vs optional** — already in the config (`Question.required`,
+      `completion_status`): an optional question refused is a non-event; only a
+      *required* refusal is the real case. Possibly enough on its own.
+    - **Persist a "declined" marker** — e.g. a nullable column on `answers` or a
+      distinct answer value — so retry logic (step 7) does not re-badger someone who
+      declined, and reporting can tell "declined" from "unanswered".
+    - **Keep completion honest either way** — a declined required question must stay
+      `partial`, never flip to `completed`. Decide the shape when step 7's retry
+      policy needs it; not before.
 
 ## Resolved
 

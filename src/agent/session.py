@@ -22,7 +22,8 @@ RECORD_ANSWER_TOOL: dict[str, Any] = {
     "description": (
         "Record the caller's answer to a question. Call this each time the caller "
         "answers one of the questions — once per question, and only once they have "
-        "actually answered it, not before."
+        "actually answered it, not before. Do not call it for a question the caller "
+        "declined or skipped."
     ),
     "parameters": {
         "type": "object",
@@ -98,8 +99,11 @@ def instructions_for(questionnaire: Questionnaire) -> str:
         "at a time, and as soon as the person answers a question, call the "
         "record_answer tool with question_id set to that question's id, raw set to "
         "their answer in their own words, and value set to a normalised form. Ask "
-        "only these questions; do not add others. When every question has been "
-        "answered, thank the person, say goodbye, and then call end_call."
+        "only these questions; do not add others. If they would rather not answer a "
+        "question, that is fine — accept it, move on to the next question, and do "
+        "not call record_answer for a question they did not answer (do not press or "
+        "repeat it). Once you have been through all the questions, thank the "
+        "person, say goodbye, and then call end_call."
     )
 
 

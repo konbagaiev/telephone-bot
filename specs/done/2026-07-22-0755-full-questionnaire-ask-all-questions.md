@@ -18,15 +18,21 @@ makes the *conversation* cover the set the completion logic already judges.
 The model owns speech and turn-taking (ADR-002), so it also owns the *sequence*:
 we hand it the whole ordered list of questions in the session instructions and let
 it ask, record, and close the call itself. Code does not orchestrate turn-by-turn
-— it reacts to each `record_answer`, feeds back what still remains, and recomputes
-completion at teardown. An early `end_call` therefore yields `partial`, exactly as
-it does today for one question; nothing new guards that path.
+— it reacts to each `record_answer` and recomputes completion at teardown. An
+early `end_call` therefore yields `partial`, exactly as it does today for one
+question; nothing new guards that path.
 
-The `record_answer` feedback carries a light nudge — which required questions are
-still unanswered — so the model reliably knows when the set is closed and it is
-time to give a closing goodbye. This stays within ADR-002: it informs the model,
-it does not script its words. The instructions require the model to thank the
-respondent and **say goodbye** before calling `end_call`.
+The `record_answer` feedback carries a light, **refusal-safe** reminder of the
+flow ("ask any remaining questions, skip any they declined, then thank them, say
+goodbye, and end_call") rather than an enumeration of the required questions still
+missing. Refusals are not recorded (see below and plan step 11), so the answered
+set cannot distinguish "not asked yet" from "asked and declined": naming what is
+"still to ask" would push the model to re-ask a question it was just declined,
+against its instructions. The ordered question list in the instructions drives the
+sequence; the reminder only reinforces the close. The instructions require the
+model to thank the respondent and **say goodbye** before calling `end_call`, and
+to accept a refusal graciously — move on, do not press, and do not record an
+answer for a question the respondent declined.
 
 The tool layer already supports this: `_record_answer` validates `question_id`
 against the whole questionnaire, and `record_answer` upserts per
@@ -39,19 +45,23 @@ against the whole questionnaire, and `record_answer` upserts per
     override where one is given), instructs the model to ask each in turn, call
     `record_answer` for each with the matching `question_id`, and — once the
     questions are covered — **thank the respondent, say goodbye, then `end_call`**.
-    Drops the "ask only this one question; do not add others" clause.
+    Drops the "ask only this one question; do not add others" clause, and adds
+    refusal handling: accept a skip graciously, move on, do not press, and do not
+    record an answer for a declined question.
   - `session_update(questionnaire, voice=…)` — same signature swap; passes the
     questionnaire through to `instructions_for`.
   - Tool descriptions: `RECORD_ANSWER_TOOL` / `END_CALL_TOOL` reworded from "the
     question" / "one question" to the multi-question flow (record each answer as it
-    comes; end after the last question and the goodbye).
+    comes; do not record a declined question; end after the last question and the
+    goodbye).
 - `src/agent/tools.py`
-  - `_record_answer` returns a `ToolResult.message` that names the required
-    question ids still unanswered (a "still to ask" nudge), or signals all required
-    questions are answered. Reads current answers via
-    `db.answered_question_ids(session.conn, session.assignment_id)` against
-    `session.questionnaire.required_question_ids`. Still `ok=True` on a stored
-    answer; unchanged on refusal/unknown id.
+  - `_record_answer` returns a fixed, refusal-safe `ToolResult.message` reminding
+    the model to cover any remaining questions (skipping declined ones), then thank,
+    say goodbye, and `end_call`. It does **not** enumerate the required questions
+    still missing — without persisting refusals (plan step 11) the answered set
+    cannot exclude declined questions, so an enumeration would push a re-ask against
+    the instructions. Still `ok=True` on a stored answer; unchanged on
+    refusal/unknown id.
 - `src/app.py` (`/stream`)
   - Drop `question = questionnaire.questions[0]`; pass `questionnaire` to
     `session_update`.
@@ -82,14 +92,13 @@ against the whole questionnaire, and `record_answer` upserts per
 ## Acceptance criteria
 `.venv/bin/python -m pytest` green, `ruff` clean, and:
 - **`test_tools.py`** — recording answers to *both* `was_on_time` and
-  `improvement` in one session stores two rows keyed to their question ids; the
-  `record_answer` result for the first (a required question still missing) names
-  what remains, and after the last required answer the result signals the required
-  set is complete. Existing single-answer, replace, unknown-id, and
-  `finalize`→`partial`/`completed` tests still pass unchanged.
-- **`test_session.py` (new, or added to an existing session test)** —
-  `instructions_for(questionnaire)` mentions *every* question id in the example
-  questionnaire and instructs a goodbye before ending. (Asserts our instruction
+  `improvement` in one session stores two rows keyed to their question ids, and the
+  `record_answer` result reminds the model to close out (`end_call`). Existing
+  single-answer, replace, unknown-id, and `finalize`→`partial`/`completed` tests
+  still pass unchanged.
+- **`test_session.py` (new)** — `instructions_for(questionnaire)` mentions *every*
+  question id in the example questionnaire, instructs a goodbye before ending, and
+  instructs graceful refusal handling (accept, move on). (Asserts our instruction
   string — our output — not the model's words; AGENTS.md.)
 - **`test_runner.py`** — after `place_call_for_assignment`, the assignment is
   `IN_PROGRESS` and `next_pending_assignment(conn)` no longer returns it (the
@@ -120,12 +129,18 @@ against the whole questionnaire, and `record_answer` upserts per
   7), nor draining an in-flight call on restart (ADR-017).
 - Not repointing `raw` at the transcript, nor any reconciliation of the two
   (separate decision).
+- Not persisting a per-question refusal as data (a "declined" marker distinct from
+  "unanswered"): step 6 handles a refusal in the model's behaviour only; the data
+  shape is deferred to plan step 11.
 - Not a new ADR: this realises ADR-002/ADR-007 (model owns the multi-question
   speech) and the `IN_PROGRESS` status that ADR-005 already defined but left
   unused. No fork is opened.
 
 ## Status
-Implemented (2026-07-22). Offline-verified: full suite green (62 tests), `ruff`
-clean. The model-driven multi-question flow is confirmed live by the next smoke;
-the instruction string and the `record_answer` nudge are unit-tested, but the
-model actually asking all questions and closing with a goodbye is a live check.
+Implemented (2026-07-22), incl. graceful per-question refusal handling and a
+refusal-safe `record_answer` reminder (the enumerated "still to ask" nudge was
+dropped — it fought the refusal handling; see Approach). Offline-verified: full
+suite green (63 tests), `ruff` clean. The model-driven multi-question flow is
+confirmed live by the next smoke; the instruction string and the reminder are
+unit-tested, but the model actually asking all questions, handling a refusal, and
+closing with a goodbye is a live check.

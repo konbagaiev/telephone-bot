@@ -29,6 +29,17 @@ def test_instructions_require_a_goodbye_before_ending(example_config):
     assert "end_call" in instructions
 
 
+def test_instructions_handle_a_refusal_gracefully(example_config):
+    # A respondent may decline a question; the model must accept it and move on
+    # rather than press, and must not record an answer for a skipped question
+    # (recording a refusal would falsely count it as answered — see plan step 11).
+    questionnaire = example_config.questionnaire("delivery_feedback")
+    instructions = instructions_for(questionnaire).lower()
+
+    assert "rather not answer" in instructions
+    assert "move on" in instructions
+
+
 def test_session_update_carries_the_instructions(example_config):
     questionnaire = example_config.questionnaire("delivery_feedback")
     update = session_update(questionnaire)

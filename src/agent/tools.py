@@ -78,16 +78,18 @@ def _record_answer(session: CallSession, arguments: dict[str, Any]) -> ToolResul
         value=arguments.get("value"),
         call_id=session.call_id,
     )
-    # Nudge the model toward covering the whole questionnaire (ADR-002 — inform, do
-    # not script): tell it which required questions are still unanswered, or that
-    # the set is complete and it can thank the person, say goodbye, and end_call.
-    answered = db.answered_question_ids(session.conn, session.assignment_id)
-    remaining = sorted(session.questionnaire.required_question_ids - answered)
-    if remaining:
-        return ToolResult(ok=True, message=f"recorded; still to ask: {', '.join(remaining)}")
+    # Reinforce the flow without claiming to know what is left (ADR-002 — inform,
+    # do not script). Refusals are not recorded (plan step 11), so the answered set
+    # cannot tell "not asked yet" from "asked and declined": enumerating the
+    # required questions still missing would push the model to re-ask one it was
+    # just declined, against its instructions. Keep it a refusal-safe reminder and
+    # let the ordered question list in the instructions drive the sequence.
     return ToolResult(
         ok=True,
-        message="recorded; all required questions answered — thank them, say goodbye, and end_call",
+        message=(
+            "recorded — ask any remaining questions (skip any they declined), then "
+            "thank them, say goodbye, and end_call"
+        ),
     )
 
 
