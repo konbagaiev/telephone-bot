@@ -113,10 +113,16 @@ _REFUSAL_ACCEPT = (
     "not answer (do not press or repeat it)."
 )
 _REFUSAL_PROBE = (
-    "If they would rather not answer a question, gently ask once why — then accept "
-    "it and move on to the next question; do not press further or repeat the "
-    "question. If they give a reason, call record_refusal with that question's id "
-    "and the reason. Do not call record_answer for a question they did not answer."
+    "If they would rather not answer a question, do not record anything yet: first "
+    "ask them once, out loud, why they would prefer not to — a brief, gentle "
+    "follow-up (for example, 'No problem at all — may I ask what makes you prefer "
+    "not to answer that?'). Wait for their reply. Their initial 'I would rather not "
+    "answer' is the refusal, not the reason — the reason is what they say after you "
+    "ask why, so never skip straight to recording. Then accept it and move on to the "
+    "next question; do not press further or repeat the question. Call record_refusal "
+    "with that question's id and the reason they gave (omit the reason if they still "
+    "decline to give one). Do not call record_answer for a question they did not "
+    "answer."
 )
 
 

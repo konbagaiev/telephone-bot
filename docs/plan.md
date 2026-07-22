@@ -75,6 +75,29 @@ first (most self-contained), then `webhooks.py`.
 made a deliberate repo convention). Update `architecture.md`'s module map in the
 same change (AGENTS.md step 6).
 
+### O11 — A carrier rejection must not surface as HTTP 500
+**Question.** When Twilio refuses to place a call, `place_call`
+(`src/telephony/twilio.py:75`) raises `TwilioRestException`, which nothing
+catches: it propagates through `place_next_call` → `ui_call_next`
+(`src/app.py:422`) and FastAPI returns a bare **500 + traceback**. Observed live
+2026-07-22 dialling a Serbian number (`+381…`): Twilio HTTP 400 "Account not
+authorized to call … enable some international permissions" — an expected,
+actionable outcome (geo-permissions off, bad number, no balance, unverified
+destination), not a server fault. How do we handle it explicitly?
+**Options.** Catch `TwilioRestException` at the carrier boundary and translate to
+a typed domain error (e.g. `CarrierRejected` carrying Twilio's code/message),
+handled by callers · catch in the UI/runner edge and re-raise as `HTTPException`
+4xx · both (translate at the boundary, present at the edge). The UI should show
+the reason inline (the geo-permissions case is a one-click fix in the Twilio
+console), not a stack trace.
+**Also.** Decide the runner/CLI path (`place_next_call` outside HTTP) — it should
+fail the one assignment with a logged reason, not crash the process, and leave the
+assignment re-runnable (it currently flips `pending → in_progress` at placement,
+step 6). Whether a rejected placement should roll that back is part of this.
+**Notes.** Small and worth doing before wider live testing (step 10), where messy
+destinations are the point. No ADR unless the domain-error shape becomes a
+convention.
+
 ## Roadmap
 
 > Not decisions — the agreed order of work. Each step ends in something that
@@ -168,6 +191,17 @@ same change (AGENTS.md step 6).
    model): calling window, `max_call_seconds`, `silence_timeout_seconds`, voicemail,
    opt-out — each needs live-line debugging (steps 5/10). Retries only *fire* once
    something runs the runner on a schedule — see O9.
+   **Live finding (2026-07-22, call 10) — fixed, re-verify on the line.** The flag
+   was on and `record_refusal` fired (both declines stored with a `refusal_reason`),
+   but the respondent was never *asked* why: the model treated the refusal utterance
+   itself ("I don't want to reply to this question") as the reason and moved on. So
+   the wiring was fine — the fault was prompt adherence: `_REFUSAL_PROBE` collapsed
+   "ask once why → then record" into one beat and skipped the spoken probe.
+   Rewrote the clause to force a distinct spoken follow-up *before* recording and to
+   forbid treating the initial decline as the reason. The clause lives in code
+   (`src/agent/session.py`), not the YAML, so this ships by deploy (commit + push →
+   image rebuild), not `push_config`; then re-run `reset_and_call` and read the
+   transcript to confirm the agent actually voices the "why".
 8. **Multilingual.** English and Russian per `Person.language`.
 9. **UI.** _(done 2026-07-22, spec `2026-07-22-0923` in `specs/done/`, ADR-023.)_
    A minimal token-gated `/ui` admin surface in the same ASGI app, server-rendered

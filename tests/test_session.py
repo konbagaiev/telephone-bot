@@ -62,12 +62,15 @@ def test_refusal_probe_changes_the_instructions_and_tools(example_config):
     off = session_update(questionnaire, POLICY)
     off_tool_names = {t["name"] for t in off["session"]["tools"]}
     assert "record_refusal" not in off_tool_names
-    assert "ask once why" not in instructions_for(questionnaire, POLICY).lower()
+    assert "why" not in instructions_for(questionnaire, POLICY).lower()
 
     on = session_update(questionnaire, POLICY_PROBE)
     on_tool_names = {t["name"] for t in on["session"]["tools"]}
     assert RECORD_REFUSAL_TOOL["name"] in on_tool_names
     on_instructions = instructions_for(questionnaire, POLICY_PROBE).lower()
-    assert "ask once why" in on_instructions
+    # The probe must make the model voice a "why" follow-up before recording, and
+    # must not let it treat the initial decline as the reason itself (call-10 bug).
+    assert "why" in on_instructions
+    assert "not the reason" in on_instructions
     # Even when probing, a refusal is still accepted — the ask does not become a push.
     assert "move on" in on_instructions
