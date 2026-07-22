@@ -12,8 +12,8 @@ webhook returns TwiML that streams the audio to `/stream`, and the bridge relays
 it to an OpenAI Realtime session whose `record_answer` tool call is written to
 Postgres. The live call itself is verified by a manual smoke, not in CI: Realtime
 behaves differently on a phone line than in any offline harness (roadmap step 4).
-Multiple questions, policy enforcement, and multilingual operation are step 5 and
-beyond (`docs/plan.md`).
+Debugging the live behaviour on a real line, multiple questions, policy
+enforcement, and multilingual operation are step 5 and beyond (`docs/plan.md`).
 
 ## Shape
 
@@ -22,8 +22,8 @@ Two storage engines, split by the kind of data rather than by convenience
 
 - **Configuration — in YAML, in git.** Questionnaires and policy. Changing a
   question is a reviewable diff.
-- **Operational data — in Postgres.** People, assignments, calls, answers.
-  Personal data, never in the repository, queryable.
+- **Operational data — in Postgres.** People, assignments, calls, answers, and
+  the per-call transcript. Personal data, never in the repository, queryable.
 
 The boundary is the same one `.gitignore` draws: what is tracked is safe to
 publish.
@@ -33,15 +33,15 @@ publish.
 | Module | Holds |
 |---|---|
 | `src/config.py` | `Question`, `Questionnaire`, `Policy`; YAML loading; `ConfigError` naming file and field |
-| `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`; the status enums; phone normalisation; `completion_status()` |
+| `src/models.py` | `Person`, `Assignment`, `Call`, `Answer`, `TranscriptSegment`; the status/role enums; phone normalisation; `completion_status()` |
 | `src/db.py` | Postgres schema (SQLAlchemy Core), connections, queries |
 | `src/env.py` | `load_local_env()` — loads a git-ignored `.env` for local dev, never overriding real env vars |
 | `src/telephony/` | The carrier boundary (ADR-004): `Carrier` Protocol in `__init__`, Twilio adapter in `twilio.py` (REST dial, signature validation, TwiML). No Twilio type leaks past it |
 | `src/agent/` | `session.py` — Realtime `session.update` and the tool definitions; `tools.py` — turning a tool call into a write (the primary test surface). The model owns speech, this owns facts (ADR-002) |
-| `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear` |
+| `src/bridge.py` | The Media Streams ↔ Realtime relay (ADR-003): pure frame translations plus two async pumps; barge-in `clear`; dispatches tool calls and transcription events (ADR-011) out to callbacks |
 | `src/runner.py` | `python -m src.runner` — place one call for the next pending assignment (ADR-013). Config is read per run |
 | `src/app.py` | FastAPI ASGI app: `GET /health`, `POST /voice` (TwiML + signature), `WS /stream` (the live bridge) |
-| `migrations/` | Alembic; `0001_initial` creates the four tables |
+| `migrations/` | Alembic; `0001_initial` creates the four tables, `0002` adds `transcript_segments` |
 | `Dockerfile`, `docker-compose.yml` | The app image and its service, behind Traefik on `phone-bot.bagaiev.com`, using the shared Postgres (ADR-017) |
 | `.github/workflows/deploy.yml` | On push to `main`: test → pull → migrate → recreate container → health check |
 | `data/example/` | A fictional questionnaire and policy |
@@ -96,7 +96,10 @@ One call, end to end:
    directions and flushes Twilio on barge-in. Both sides speak G.711 μ-law 8 kHz,
    so no transcoding hop is added (ADR-003). GA server events: output audio is
    `response.output_audio.delta`; a tool call arrives inside `response.done` as a
-   `response.output[]` item of `type == "function_call"`.
+   `response.output[]` item of `type == "function_call"`. Transcription events
+   (ADR-011) are dispatched to an `on_transcript` callback that `/stream` writes to
+   `transcript_segments` — a debug record of what was actually said, isolated so a
+   failed write never breaks the call.
 5. **A tool call** (`src/agent/tools.py`) is written to Postgres: `record_answer`
    after validating the question id, `end_call` to wind up. On teardown —
    reached on every exit path via a `finally`, even when a socket closes mid-flush

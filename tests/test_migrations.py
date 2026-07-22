@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, inspect, text
 
 from tests.conftest import ROOT, _ensure_database_exists, _test_url
 
-EXPECTED_TABLES = {"persons", "assignments", "calls", "answers"}
+EXPECTED_TABLES = {"persons", "assignments", "calls", "answers", "transcript_segments"}
 
 
 @pytest.fixture
@@ -67,7 +67,8 @@ def test_upgrade_from_empty_then_downgrade(migration_url, engine):
             leftover_types = conn.execute(
                 text(
                     "select typname from pg_type where typname in "
-                    "('assignment_status', 'call_disposition', 'call_end_reason')"
+                    "('assignment_status', 'call_disposition', 'call_end_reason', "
+                    "'transcript_role')"
                 )
             ).scalars().all()
             assert leftover_types == []

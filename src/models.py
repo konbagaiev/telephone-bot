@@ -48,6 +48,17 @@ class AssignmentStatus(str, Enum):
     OPTED_OUT = "opted_out"
 
 
+class TranscriptRole(str, Enum):
+    """Who spoke a transcript segment (ADR-011).
+
+    The call is outbound, so the person we called is the `respondent` — never the
+    `caller`, which is us — and the `agent` is the model speaking for us (ADR-002).
+    """
+
+    RESPONDENT = "respondent"
+    AGENT = "agent"
+
+
 class Disposition(str, Enum):
     """What became of the call attempt (ADR-005)."""
 
@@ -108,6 +119,24 @@ class Answer:
     raw: str
     value: Any | None = None
     call_id: int | None = None
+    id: int | None = None
+
+
+@dataclass
+class TranscriptSegment:
+    """One utterance as the Realtime API transcribed it (ADR-011).
+
+    A debugging record of what was *actually* said, kept beside the answers so the
+    model's `record_answer` claim can be checked against it. `recorded_at` is
+    wall-clock at write time, not utterance time: whisper transcribes a segment
+    after VAD closes it, so a segment can land after the answer it describes — that
+    lag is part of what the record makes visible.
+    """
+
+    call_id: int
+    role: TranscriptRole
+    text: str
+    recorded_at: datetime | None = None
     id: int | None = None
 
 

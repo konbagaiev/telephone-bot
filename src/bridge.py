@@ -14,10 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterable, Awaitable, Callable, Protocol
 
 from websockets.exceptions import ConnectionClosed
+
+log = logging.getLogger(__name__)
+
+# GA (gpt-realtime) transcription events. The respondent name is documented; the
+# agent name is a best-guess pending a live smoke, so any other `*transcript*`
+# event is logged (see pump_realtime_to_twilio) rather than silently dropped.
+RESPONDENT_TRANSCRIPT_EVENT = "conversation.item.input_audio_transcription.completed"
+AGENT_TRANSCRIPT_EVENT = "response.output_audio_transcript.done"
 
 
 class Sink(Protocol):
@@ -29,6 +38,10 @@ class Sink(Protocol):
 # on_tool_call(name, function_call_id, arguments) — `function_call_id` is the
 # Realtime call id used to route the result back, not our Call.id.
 ToolCallHandler = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
+# on_transcript(role, text) — role is a bare "respondent"/"agent" string so the
+# bridge stays dumb transport with no model import; app.py maps it to the enum.
+TranscriptHandler = Callable[[str, str], Awaitable[None]]
 
 
 @dataclass
@@ -102,12 +115,15 @@ async def pump_realtime_to_twilio(
     twilio: Sink,
     state: BridgeState,
     on_tool_call: ToolCallHandler,
+    on_transcript: TranscriptHandler,
 ) -> None:
     """Relay the agent's audio back to the respondent, flush on barge-in, dispatch tools.
 
     GA event names: output audio is `response.output_audio.delta`, and a tool call
     is delivered inside `response.done` as an item of `response.output[]` with
-    `type == "function_call"` — not as a standalone event.
+    `type == "function_call"` — not as a standalone event. Transcription events
+    (ADR-011) are dispatched to `on_transcript`; any other `*transcript*` event is
+    logged so a mis-guessed GA name is caught in the smoke, not dropped silently.
     """
     async for raw in source:
         message = json.loads(raw)
@@ -121,6 +137,17 @@ async def pump_realtime_to_twilio(
             # The respondent talked over the agent (barge-in): flush the agent audio
             # Twilio still has queued so it stops mid-sentence and the person is heard.
             await twilio.send(json.dumps(interrupt_agent_playback(state.stream_sid)))
+        elif kind == RESPONDENT_TRANSCRIPT_EVENT:
+            text = message.get("transcript") or ""
+            if text:
+                await on_transcript("respondent", text)
+        elif kind == AGENT_TRANSCRIPT_EVENT:
+            text = message.get("transcript") or ""
+            if text:
+                await on_transcript("agent", text)
+        elif kind and "transcript" in kind:
+            # Not a name we handle — surface it so the guessed GA names can be fixed.
+            log.info("unhandled transcript event: %s", kind)
         elif kind == "response.done":
             # A turn finished; if it carried a tool call, hand it to the agent layer.
             for item in (message.get("response", {}).get("output") or []):
@@ -138,6 +165,7 @@ async def run_bridge(
     realtime_sink: Sink,
     state: BridgeState,
     on_tool_call: ToolCallHandler,
+    on_transcript: TranscriptHandler,
 ) -> None:
     """Run both pumps until either side ends, then stop the other.
 
@@ -148,7 +176,9 @@ async def run_bridge(
     tasks = {
         asyncio.create_task(pump_twilio_to_realtime(twilio_source, realtime_sink, state)),
         asyncio.create_task(
-            pump_realtime_to_twilio(realtime_source, twilio_sink, state, on_tool_call)
+            pump_realtime_to_twilio(
+                realtime_source, twilio_sink, state, on_tool_call, on_transcript
+            )
         ),
     }
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

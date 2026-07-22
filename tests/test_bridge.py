@@ -57,6 +57,10 @@ class FakeSink:
         self.sent.append(json.loads(text))
 
 
+async def _ignore_transcript(*_):
+    """A no-op transcript handler for tests not exercising the transcript seam."""
+
+
 def test_translations_are_frame_for_frame():
     assert respondent_audio_to_agent("PAYLOAD") == {
         "type": "input_audio_buffer.append",
@@ -116,11 +120,60 @@ def test_realtime_to_twilio_relays_audio_flushes_and_dispatches():
     async def on_tool_call(name, function_call_id, arguments):
         calls.append((name, function_call_id, arguments))
 
-    asyncio.run(pump_realtime_to_twilio(source, twilio, state, on_tool_call))
+    asyncio.run(pump_realtime_to_twilio(source, twilio, state, on_tool_call, _ignore_transcript))
 
     assert agent_audio_to_respondent("MZ1", "AGENT_AUDIO") in twilio.sent
     assert interrupt_agent_playback("MZ1") in twilio.sent
     assert calls == [("record_answer", "fc_1", {"question_id": "was_on_time", "raw": "yes"})]
+
+
+def test_input_and_output_transcripts_are_dispatched_by_role():
+    # The GA transcription events carry what was actually said (ADR-011): the
+    # respondent's from input-audio transcription, the agent's from its output.
+    source = FakeSource(
+        [
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "no it was two days late",
+            },
+            {"type": "response.output_audio_transcript.done", "transcript": "Sorry to hear that."},
+        ]
+    )
+    segments = []
+
+    async def on_transcript(role, text):
+        segments.append((role, text))
+
+    async def on_tool_call(*_):
+        pass
+
+    asyncio.run(pump_realtime_to_twilio(source, FakeSink(), BridgeState("MZ1"), on_tool_call, on_transcript))
+
+    assert segments == [
+        ("respondent", "no it was two days late"),
+        ("agent", "Sorry to hear that."),
+    ]
+
+
+def test_a_non_transcript_event_dispatches_no_transcript():
+    # An empty transcript and an unrelated event must not invoke on_transcript.
+    source = FakeSource(
+        [
+            {"type": "conversation.item.input_audio_transcription.completed", "transcript": ""},
+            {"type": "response.output_audio.delta", "delta": "AUDIO"},
+        ]
+    )
+    segments = []
+
+    async def on_transcript(role, text):
+        segments.append((role, text))
+
+    async def on_tool_call(*_):
+        pass
+
+    asyncio.run(pump_realtime_to_twilio(source, FakeSink(), BridgeState("MZ1"), on_tool_call, on_transcript))
+
+    assert segments == []
 
 
 def test_response_done_without_a_function_call_dispatches_nothing():
@@ -133,7 +186,9 @@ def test_response_done_without_a_function_call_dispatches_nothing():
     async def on_tool_call(*args):
         calls.append(args)
 
-    asyncio.run(pump_realtime_to_twilio(source, FakeSink(), BridgeState("MZ1"), on_tool_call))
+    asyncio.run(
+        pump_realtime_to_twilio(source, FakeSink(), BridgeState("MZ1"), on_tool_call, _ignore_transcript)
+    )
     assert calls == []
 
 
@@ -146,7 +201,9 @@ def test_audio_before_start_is_dropped_not_crashed():
     async def on_tool_call(*_):
         pass
 
-    asyncio.run(pump_realtime_to_twilio(source, twilio, BridgeState(), on_tool_call))
+    asyncio.run(
+        pump_realtime_to_twilio(source, twilio, BridgeState(), on_tool_call, _ignore_transcript)
+    )
     assert twilio.sent == []
 
 
@@ -185,6 +242,7 @@ def test_run_bridge_survives_a_closed_realtime_socket():
                 ClosedSink(),
                 BridgeState(),
                 on_tool_call,
+                _ignore_transcript,
             ),
             timeout=1.0,
         )
@@ -209,6 +267,7 @@ def test_run_bridge_stops_when_the_caller_hangs_up():
                 FakeSink(),
                 BridgeState(),
                 on_tool_call,
+                _ignore_transcript,
             ),
             timeout=1.0,
         )

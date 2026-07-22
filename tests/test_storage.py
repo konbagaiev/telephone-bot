@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from src.db import (
+    add_transcript_segment,
     answers_for,
     answered_question_ids,
     create_assignment,
@@ -15,9 +16,16 @@ from src.db import (
     record_answer,
     refresh_completion,
     start_call,
+    transcript_for,
     validate_references,
 )
-from src.models import AssignmentStatus, Disposition, EndReason, PhoneNumberError
+from src.models import (
+    AssignmentStatus,
+    Disposition,
+    EndReason,
+    PhoneNumberError,
+    TranscriptRole,
+)
 
 # A Spanish number (ADR-010), written nationally and in E.164.
 NATIONAL = "612 34 56 78"
@@ -94,6 +102,23 @@ def test_a_call_that_drops_mid_questionnaire_is_visible(conn, example_config):
     status = refresh_completion(conn, example_config, assignment.id)
     assert status is AssignmentStatus.PARTIAL
     assert answered_question_ids(conn, assignment.id) == set()
+
+
+def test_transcript_segments_accumulate_in_order(conn, example_config):
+    """The debug record (ADR-011): what was actually said, kept beside the answers."""
+    person = get_or_create_person(conn, E164, default_region="ES")
+    assignment = create_assignment(conn, person.id, "delivery_feedback")
+    call = start_call(conn, assignment.id)
+
+    add_transcript_segment(conn, call.id, TranscriptRole.AGENT, "Was your delivery on time?")
+    add_transcript_segment(conn, call.id, TranscriptRole.RESPONDENT, "no it was two days late")
+
+    stored = transcript_for(conn, call.id)
+    assert [(s.role, s.text) for s in stored] == [
+        (TranscriptRole.AGENT, "Was your delivery on time?"),
+        (TranscriptRole.RESPONDENT, "no it was two days late"),
+    ]
+    assert all(s.call_id == call.id and s.recorded_at is not None for s in stored)
 
 
 def test_assigning_the_same_questionnaire_twice_is_idempotent(conn):

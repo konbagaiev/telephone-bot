@@ -35,6 +35,8 @@ from src.models import (
     Disposition,
     EndReason,
     Person,
+    TranscriptRole,
+    TranscriptSegment,
     completion_status,
     normalise_phone,
 )
@@ -106,6 +108,17 @@ answers = Table(
     Column("value", JSONB),
     Column("recorded_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("assignment_id", "question_id", name="uq_answer_assignment_question"),
+)
+
+
+transcript_segments = Table(
+    "transcript_segments",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("call_id", Integer, ForeignKey("calls.id", ondelete="CASCADE"), nullable=False),
+    Column("role", _enum(TranscriptRole, "transcript_role"), nullable=False),
+    Column("text", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -364,6 +377,43 @@ def answers_for(conn: Connection, assignment_id: int) -> list[Answer]:
             raw=r.raw,
             value=r.value,
             call_id=r.call_id,
+        )
+        for r in rows
+    ]
+
+
+# --- transcript -----------------------------------------------------------
+
+
+def add_transcript_segment(
+    conn: Connection, call_id: int, role: TranscriptRole, text: str
+) -> None:
+    """Append one transcribed utterance to a call's transcript (ADR-011).
+
+    A debug record, not the answer of record: segments accumulate, never replace,
+    so the full back-and-forth survives for comparison against `record_answer`.
+    """
+    conn.execute(
+        transcript_segments.insert().values(
+            call_id=call_id, role=role, text=text, recorded_at=_now()
+        )
+    )
+
+
+def transcript_for(conn: Connection, call_id: int) -> list[TranscriptSegment]:
+    """A call's transcript in insertion order (not utterance order — see the model)."""
+    rows = conn.execute(
+        select(transcript_segments)
+        .where(transcript_segments.c.call_id == call_id)
+        .order_by(transcript_segments.c.id)
+    ).all()
+    return [
+        TranscriptSegment(
+            id=r.id,
+            call_id=r.call_id,
+            role=TranscriptRole(r.role),
+            text=r.text,
+            recorded_at=r.recorded_at,
         )
         for r in rows
     ]

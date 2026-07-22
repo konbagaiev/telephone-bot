@@ -12,6 +12,7 @@ behind the `Carrier` boundary (ADR-004).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -24,10 +25,12 @@ from src.agent.session import session_update
 from src.agent.tools import CallSession, finalize, handle_tool_call
 from src.bridge import BridgeState, Sink, run_bridge
 from src.config import load_config
-from src.models import EndReason
+from src.models import EndReason, TranscriptRole
 from src.telephony.twilio import stream_twiml, validate_signature
 
 app = FastAPI()
+
+log = logging.getLogger(__name__)
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -185,9 +188,25 @@ async def stream(ws: WebSocket) -> None:
                     ended_by_agent = True
                     await realtime.close()
 
+            async def on_transcript(role: str, text: str) -> None:
+                # A debug record (ADR-011), not the call's purpose: its write must
+                # never break the conversation, so its errors are swallowed here and
+                # the call carries on. Its own short transaction, per utterance.
+                try:
+                    with engine.begin() as conn:
+                        db.add_transcript_segment(conn, call_id, TranscriptRole(role), text)
+                except Exception:  # noqa: BLE001 — a debug aid must not end the call
+                    log.warning("failed to store transcript segment", exc_info=True)
+
             try:
                 await run_bridge(
-                    twilio_source, twilio_sink, realtime, realtime, state, on_tool_call
+                    twilio_source,
+                    twilio_sink,
+                    realtime,
+                    realtime,
+                    state,
+                    on_tool_call,
+                    on_transcript,
                 )
             except (WebSocketDisconnect, ConnectionClosed):
                 pass  # a hang-up or a clean end-of-call close, not an error
