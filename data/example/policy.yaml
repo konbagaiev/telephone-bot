@@ -10,7 +10,7 @@ retry_delays_minutes: [0, 2, 60]
 
 # When true, the agent asks once *why* a question was declined and records the
 # reason. Default false keeps step-6 behaviour: accept the refusal, move on.
-probe_refusal_reason: false
+probe_refusal_reason: true
 
 # Region assumed when a phone number is written in national form. Numbers are
 # stored in E.164 regardless.

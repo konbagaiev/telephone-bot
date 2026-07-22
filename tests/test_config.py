@@ -15,7 +15,7 @@ def test_example_config_loads(example_config):
     assert questionnaire.required_question_ids == {"was_on_time"}
 
     assert example_config.policy.retry_delays_minutes == [0, 2, 60]
-    assert example_config.policy.probe_refusal_reason is False
+    assert example_config.policy.probe_refusal_reason is True
     assert example_config.policy.default_region == "ES"
 
 
